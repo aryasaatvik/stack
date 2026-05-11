@@ -1562,6 +1562,45 @@ describe("Stack", () => {
     },
   );
 
+  it.effect(
+    "sync uses stored child anchor after squash-merged parent is removed",
+    () => {
+      const seen: Array<string> = [];
+      const pulls = [pr(2, "child", "dev")];
+      const layer = stackTestLayer({
+        current: "child",
+        refs: [ref("dev", "dev-squash"), ref("child", "child-head")],
+        pulls,
+        bases: bases(["child", "dev", "dev-squash"]),
+        state: stackState([
+          stackLink({ branch: "parent", parent: "dev", anchor: "dev-old", pr: 1 }),
+          stackLink({ branch: "child", parent: "parent", anchor: "parent-anchor", pr: 2 }),
+        ]),
+        service: {
+          commits: (from: string, branch: string) =>
+            Effect.succeed(
+              branch === "child" && from === "parent-anchor"
+                ? ["child-only"]
+                : branch === "child" && from === "dev-squash"
+                  ? ["parent-1", "parent-2", "child-only"]
+                  : [],
+            ),
+          novel: (_parent: string, _branch: string, commits: ReadonlyArray<string>) => Effect.succeed(commits),
+          replay: (branch: string, parent: string, commits: ReadonlyArray<string>) =>
+            Effect.sync(() => seen.push(`rebase ${branch} ${parent} ${commits.join(",")}`)),
+        },
+      });
+
+      return Effect.gen(function* () {
+        const stack = yield* Stack;
+        yield* stack.sync({ dryRun: false });
+
+        expect(seen).toContain("rebase child origin/dev child-only");
+        expect(seen).not.toContain("rebase child origin/dev parent-1,parent-2,child-only");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("undo restores the last applied mutation", () => {
     const test = makeSync();
 

@@ -289,6 +289,7 @@ ${note}`;
             const openBases = new Set(pulls.map((pull) => String(pull.base)));
             const actions: Array<StackResult.StackResultItem> = [];
             const kept = new Array<StackLink>();
+            const replayAnchors = new Map<string, string>();
 
             for (const link of state.links) {
               const branch = String(link.branch);
@@ -328,10 +329,13 @@ ${note}`;
               ) {
                 const anchor = yield* git.base(branch, parent);
                 if (Option.isSome(anchor)) {
+                  const oldParent = String(link.parent);
+                  const oldParentExists = refNames.has(oldParent) || trunks.has(oldParent);
+                  if (!oldParentExists) replayAnchors.set(branch, String(link.anchor));
                   const next = stackLink({
                     branch,
                     parent,
-                    anchor: anchor.value,
+                    anchor: oldParentExists ? anchor.value : link.anchor,
                     pr: Number(pull.number),
                   });
                   actions.push({
@@ -355,6 +359,7 @@ ${note}`;
                 reconciled.sort((a, b) => a.branch.localeCompare(b.branch)),
               ),
               actions,
+              replayAnchors,
             };
           }),
       );
@@ -388,11 +393,13 @@ ${note}`;
             readonly saved?: Map<string, string>;
             readonly journalState?: ReturnType<typeof stackState>;
             readonly initialActions?: ReadonlyArray<StackResult.StackResultItem>;
+            readonly replayAnchors?: ReadonlyMap<string, string>;
           },
         ) =>
           Effect.gen(function* () {
             const apply = opts.apply;
             const saved = opts.saved ?? new Map<string, string>();
+            const replayAnchors = opts.replayAnchors ?? new Map<string, string>();
             const journalState = opts.journalState ?? state;
             const initialActions = opts.initialActions ?? [];
             const mode: StackResult.Mode = apply ? "apply" : "dry-run";
@@ -515,17 +522,8 @@ ${note}`;
               }
               const want = tips.get(onto) ?? heads.get(parent) ?? null;
               const have = yield* git.base(link.branch, onto);
-              const baseRef = yield* git.base(link.branch, from);
-              const commitsToReplay = Option.isSome(baseRef)
-                ? yield* git
-                    .commits(baseRef.value, link.branch)
-                    .pipe(
-                      Effect.flatMap((commits) =>
-                        git.novel(onto, link.branch, commits),
-                      ),
-                    )
-                : Array<string>();
               const drift =
+                replayAnchors.has(String(link.branch)) ||
                 parent !== link.parent ||
                 moved.has(parent) ||
                 (want && (Option.isNone(have) || have.value !== want));
@@ -535,6 +533,14 @@ ${note}`;
               let num = pr?.number ?? link.pr;
 
               if (drift) {
+                const anchor = replayAnchors.get(String(link.branch));
+                const baseRef = anchor ? Option.some(anchor) : yield* git.base(link.branch, from);
+                const commitsToReplay = Option.isSome(baseRef)
+                  ? yield* Effect.gen(function* () {
+                      const commits = yield* git.commits(baseRef.value, link.branch);
+                      return yield* git.novel(onto, link.branch, commits);
+                    })
+                  : Array<string>();
                 backup = `backup/stack-sync-${stamp}-${link.branch}`;
                 const rebase = {
                   branch: String(link.branch),
@@ -764,6 +770,7 @@ ${note}`;
               {
                 apply: !dryRun,
                 journalState: state,
+                replayAnchors: reconciled.replayAnchors,
                 initialActions: [
                   ...reconciled.actions,
                   ...plan.map(StackResult.track),
