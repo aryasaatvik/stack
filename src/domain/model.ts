@@ -199,6 +199,51 @@ export class DirtyWorktreeError extends Schema.TaggedErrorClass<DirtyWorktreeErr
   }
 }
 
+export class StackOperationError extends Schema.TaggedErrorClass<StackOperationError>()(
+  "StackOperationError",
+  {
+    message: Schema.String,
+  },
+) {
+  constructor(message: string) {
+    super({ message });
+  }
+}
+
+export class GitHubDecodeError extends Schema.TaggedErrorClass<GitHubDecodeError>()(
+  "GitHubDecodeError",
+  {
+    args: Schema.Array(Schema.String),
+    output: Schema.String,
+    detail: Schema.String,
+    message: Schema.String,
+  },
+) {
+  constructor(
+    readonly args: ReadonlyArray<string>,
+    readonly output: string,
+    readonly detail: string,
+  ) {
+    super({
+      args: Array.from(args),
+      output,
+      detail,
+      message: `gh ${args.join(" ")} returned invalid JSON`,
+    });
+  }
+}
+
+export type StoreError = StateError;
+export type GitHubError = ExecError | GitHubDecodeError;
+export type StackError =
+  | ExecError
+  | GitHubDecodeError
+  | StateError
+  | BranchError
+  | MergeBaseError
+  | DirtyWorktreeError
+  | StackOperationError;
+
 export const stackState = (links: ReadonlyArray<StackLink>) =>
   new StackState({ version, links: Array.from(links) });
 
