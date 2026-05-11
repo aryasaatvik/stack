@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -148,7 +149,8 @@ export const live = Layer.effect(
         commits: ReadonlyArray<string>,
       ) {
         const current = yield* run("git", ["branch", "--show-current"]);
-        const temp = `stack/replay-${Date.now()}-${branch.replaceAll("/", "-")}`;
+        const now = yield* Clock.currentTimeMillis;
+        const temp = `stack/replay-${now}-${branch.replaceAll("/", "-")}`;
         const abortCherryPick = run("git", ["cherry-pick", "--abort"], [
           0,
           1,

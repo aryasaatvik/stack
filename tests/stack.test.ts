@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer, Option, Ref } from "effect";
+import { TestClock } from "effect/testing";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1166,13 +1167,14 @@ describe("Git", () => {
     );
 
     return Effect.gen(function* () {
+      yield* TestClock.setTime(1_700_000_000_000);
       const git = yield* Git.Service;
 
       const error = yield* Effect.flip(git.replay("stack-b", "dev", ["b1"]));
 
       expect(error).toBeInstanceOf(ExecError);
       const temp = calls[1]?.[3];
-      expect(temp).toMatch(/^stack\/replay-\d+-stack-b$/);
+      expect(temp).toBe("stack/replay-1700000000000-stack-b");
       expect(calls).toEqual([
         ["git", "branch", "--show-current"],
         ["git", "checkout", "-B", temp, "dev"],

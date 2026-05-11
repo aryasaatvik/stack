@@ -1,4 +1,5 @@
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -113,6 +114,10 @@ ${note}`;
             `The PR did not merge immediately. If checks are still running or the PR is waiting on required reviews, use: stack merge --auto\n` +
             `If you intentionally want to bypass GitHub merge requirements with admin privileges, use: stack merge --apply --admin`,
         );
+      const timestamp = Effect.fn("Stack.timestamp")(function* () {
+        const now = yield* DateTime.nowAsDate;
+        return now.toISOString().replaceAll(":", "").replaceAll(".", "");
+      });
 
       const githubPullBase = (remote: string) => {
         const https = remote.match(
@@ -403,10 +408,7 @@ ${note}`;
             const journalState = opts.journalState ?? state;
             const initialActions = opts.initialActions ?? [];
             const mode: StackResult.Mode = apply ? "apply" : "dry-run";
-            const stamp = new Date()
-              .toISOString()
-              .replaceAll(":", "")
-              .replaceAll(".", "");
+            const stamp = yield* timestamp();
             const actions: Array<StackResult.StackResultItem> =
               Array.from(initialActions);
             const links = new Map(
@@ -1042,10 +1044,7 @@ ${note}`;
             }
 
             const root = cfg.trunks[0] ?? branchName("dev");
-            const stamp = new Date()
-              .toISOString()
-              .replaceAll(":", "")
-              .replaceAll(".", "");
+            const stamp = yield* timestamp();
             const name = `backup/landed-${stamp}-${target}`;
             const hasLocalTarget = refs.some((item) => item.name === target);
             const next =
