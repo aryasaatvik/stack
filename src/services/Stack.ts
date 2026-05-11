@@ -15,6 +15,8 @@ import {
   PullRef,
   stackLink,
   StackLink,
+  StackOperationError,
+  type StackError,
   stackState,
   StatusReport,
   UndoEntry,
@@ -33,14 +35,14 @@ import * as Progress from "./Progress.ts";
 import { Store } from "./Store.ts";
 
 export interface StackService {
-  readonly status: () => Effect.Effect<StatusReport, unknown>;
+  readonly status: () => Effect.Effect<StatusReport, StackError>;
   readonly adopt: (
     branch: string,
     parent: string,
-  ) => Effect.Effect<StackLink, unknown>;
+  ) => Effect.Effect<StackLink, StackError>;
   readonly links: (
     apply?: boolean,
-  ) => Effect.Effect<ReadonlyArray<string>, unknown>;
+  ) => Effect.Effect<ReadonlyArray<string>, StackError>;
   readonly land: (
     branch?: string,
     opts?: {
@@ -48,18 +50,18 @@ export interface StackService {
       readonly auto?: boolean;
       readonly admin?: boolean;
     },
-  ) => Effect.Effect<ReadonlyArray<string>, unknown>;
+  ) => Effect.Effect<ReadonlyArray<string>, StackError>;
   readonly sync: (
     opts?: { readonly dryRun?: boolean },
-  ) => Effect.Effect<ReadonlyArray<string>, unknown>;
-  readonly doctor: () => Effect.Effect<ReadonlyArray<string>, unknown>;
+  ) => Effect.Effect<ReadonlyArray<string>, StackError>;
+  readonly doctor: () => Effect.Effect<ReadonlyArray<string>, StackError>;
   readonly repair: (
     apply?: boolean,
-  ) => Effect.Effect<ReadonlyArray<string>, unknown>;
-  readonly last: () => Effect.Effect<ReadonlyArray<string>, unknown>;
+  ) => Effect.Effect<ReadonlyArray<string>, StackError>;
+  readonly last: () => Effect.Effect<ReadonlyArray<string>, StackError>;
   readonly undo: (
     apply?: boolean,
-  ) => Effect.Effect<ReadonlyArray<string>, unknown>;
+  ) => Effect.Effect<ReadonlyArray<string>, StackError>;
 }
 
 export class Stack extends Context.Service<Stack, StackService>()("@stack/Stack") {
@@ -109,11 +111,14 @@ ${note}`;
       const wait = (message: string) =>
         progress.emit({ _tag: "Wait", message });
       const mergeFailure = (err: unknown) =>
-        new Error(
+        new StackOperationError(
           `${err instanceof Error ? err.message : String(err)}\n\n` +
             `The PR did not merge immediately. If checks are still running or the PR is waiting on required reviews, use: stack merge --auto\n` +
             `If you intentionally want to bypass GitHub merge requirements with admin privileges, use: stack merge --apply --admin`,
         );
+      const missingPull = (err: StackError) =>
+        err._tag === "ExecError" &&
+        /not found|could not resolve|no pull request/i.test(err.stderr);
       const timestamp = Effect.fn("Stack.timestamp")(function* () {
         const now = yield* DateTime.nowAsDate;
         return now.toISOString().replaceAll(":", "").replaceAll(".", "");
@@ -166,12 +171,12 @@ ${note}`;
           const refs = yield* git.refs();
           if (trunk(branch)) {
             return yield* Effect.fail(
-              new Error(`cannot track trunk branch: ${branch}`),
+              new StackOperationError(`cannot track trunk branch: ${branch}`),
             );
           }
           if (branch === parent) {
             return yield* Effect.fail(
-              new Error(`${branch} cannot be its own parent`),
+              new StackOperationError(`${branch} cannot be its own parent`),
             );
           }
           if (!refs.some((ref) => ref.name === branch))
@@ -202,7 +207,9 @@ ${note}`;
             )
           ) {
             return yield* Effect.fail(
-              new Error(`tracking ${branch} onto ${parent} would create a cycle`),
+              new StackOperationError(
+                `tracking ${branch} onto ${parent} would create a cycle`,
+              ),
             );
           }
           const pr = pulls.find((pull) => pull.head === branch)?.number ?? null;
@@ -615,7 +622,7 @@ ${note}`;
                     ? yield* github
                         .pull(link.pr)
                         .pipe(
-                          Effect.catch(() =>
+                          Effect.catchIf(missingPull, () =>
                             Effect.succeed<PullMeta | null>(null),
                           ),
                         )
@@ -789,7 +796,7 @@ ${note}`;
                 ? Effect.void
                 : step(`restore branch ${current}`).pipe(
                     Effect.flatMap(() => git.switch(current)),
-                    Effect.catch(() => Effect.void),
+                    Effect.catchTag("ExecError", () => Effect.void),
                   ),
             ),
           );
@@ -814,7 +821,7 @@ ${note}`;
                 .map((pr) =>
                   github
                     .pull(pr)
-                    .pipe(Effect.catch(() => Effect.succeed(null))),
+                    .pipe(Effect.catchIf(missingPull, () => Effect.succeed(null))),
                 ),
               { concurrency: "unbounded" },
             );
@@ -972,12 +979,12 @@ ${note}`;
             const admin = opts?.admin ?? false;
             if (apply && auto) {
               return yield* Effect.fail(
-                new Error("use either --apply or --auto, not both"),
+                new StackOperationError("use either --apply or --auto, not both"),
               );
             }
             if (admin && !apply) {
               return yield* Effect.fail(
-                new Error("use --admin only with --apply"),
+                new StackOperationError("use --admin only with --apply"),
               );
             }
             const active = apply || auto;
@@ -1011,7 +1018,7 @@ ${note}`;
             if (!branch && !state.links.some((item) => item.branch === target)) {
               if (roots.length > 1) {
                 return yield* Effect.fail(
-                  new Error(
+                  new StackOperationError(
                     `multiple stack roots found: ${roots.join(", ")}. run: stack merge <branch>`,
                   ),
                 );
@@ -1025,21 +1032,23 @@ ${note}`;
                 return yield* Effect.fail(new BranchError(target));
               const parent = pr?.base ?? String(cfg.trunks[0] ?? "dev");
               return yield* Effect.fail(
-                new Error(
+                new StackOperationError(
                   `${target} is not tracked in stack state. status can infer it, but merge needs an explicit link. run: stack track ${target} --onto ${parent}`,
                 ),
               );
             }
             if (!trunk(link.parent)) {
               return yield* Effect.fail(
-                new Error(`${target} is not the oldest branch in its stack`),
+                new StackOperationError(
+                  `${target} is not the oldest branch in its stack`,
+                ),
               );
             }
 
             const pr = pulls.find((item) => item.head === target) ?? null;
             if (!pr) {
               return yield* Effect.fail(
-                new Error(`no open PR found for ${target}`),
+                new StackOperationError(`no open PR found for ${target}`),
               );
             }
 

@@ -8,17 +8,18 @@ import * as Schema from "effect/Schema";
 import {
   stackState,
   StackState,
+  type StoreError,
   StateError,
   UndoState,
 } from "../domain/model.ts";
 import { StackConfig } from "./Config.ts";
 
 export interface StoreService {
-  readonly read: () => Effect.Effect<StackState, unknown>;
-  readonly write: (state: StackState) => Effect.Effect<void, unknown>;
-  readonly readUndo: () => Effect.Effect<UndoState | null, unknown>;
-  readonly writeUndo: (state: UndoState) => Effect.Effect<void, unknown>;
-  readonly clearUndo: () => Effect.Effect<void, unknown>;
+  readonly read: () => Effect.Effect<StackState, StoreError>;
+  readonly write: (state: StackState) => Effect.Effect<void, StoreError>;
+  readonly readUndo: () => Effect.Effect<UndoState | null, StoreError>;
+  readonly writeUndo: (state: UndoState) => Effect.Effect<void, StoreError>;
+  readonly clearUndo: () => Effect.Effect<void, StoreError>;
 }
 
 const empty = () => stackState([]);
@@ -37,7 +38,13 @@ export class Store extends Context.Service<Store, StoreService>()("@stack/Store"
         parse: (raw: string) => A,
       ) =>
         Effect.gen(function* () {
-          const has = yield* fs.exists(file);
+          const has = yield* fs
+            .exists(file)
+            .pipe(
+              Effect.mapError(
+                (err) => new StateError(file, "exists", String(err)),
+              ),
+            );
           if (!has) return miss();
 
           const raw = yield* fs
@@ -99,7 +106,9 @@ export class Store extends Context.Service<Store, StoreService>()("@stack/Store"
       );
 
       const clearUndo = Effect.fn("Store.clearUndo")(() =>
-        fs.remove(cfg.journal).pipe(Effect.catch(() => Effect.void)),
+        fs.remove(cfg.journal).pipe(
+          Effect.catchTag("PlatformError", () => Effect.void),
+        ),
       );
 
       return Store.of({ read, write, readUndo, writeUndo, clearUndo });

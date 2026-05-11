@@ -5,6 +5,8 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import {
   ExecError,
+  GitHubDecodeError,
+  type GitHubError,
   PullLabel,
   pullMeta,
   PullMeta,
@@ -15,24 +17,24 @@ import * as Proc from "../platform/proc.ts";
 import { StackConfig } from "./Config.ts";
 
 export interface Interface {
-  readonly auto: (pr: number) => Effect.Effect<void, ExecError>;
+  readonly auto: (pr: number) => Effect.Effect<void, GitHubError>;
   readonly merge: (
     pr: number,
     opts?: { readonly admin?: boolean },
-  ) => Effect.Effect<void, ExecError>;
-  readonly wait: (pr: number) => Effect.Effect<void, ExecError>;
-  readonly pulls: () => Effect.Effect<ReadonlyArray<PullRef>, ExecError>;
-  readonly pull: (pr: number) => Effect.Effect<PullMeta, ExecError>;
-  readonly edit: (pr: number, base: string) => Effect.Effect<void, ExecError>;
-  readonly body: (pr: number, body: string) => Effect.Effect<void, ExecError>;
-  readonly close: (pr: number) => Effect.Effect<void, ExecError>;
+  ) => Effect.Effect<void, GitHubError>;
+  readonly wait: (pr: number) => Effect.Effect<void, GitHubError>;
+  readonly pulls: () => Effect.Effect<ReadonlyArray<PullRef>, GitHubError>;
+  readonly pull: (pr: number) => Effect.Effect<PullMeta, GitHubError>;
+  readonly edit: (pr: number, base: string) => Effect.Effect<void, GitHubError>;
+  readonly body: (pr: number, body: string) => Effect.Effect<void, GitHubError>;
+  readonly close: (pr: number) => Effect.Effect<void, GitHubError>;
   readonly create: (
     branch: string,
     base: string,
     title: string,
     body: string,
     labels: ReadonlyArray<string>,
-  ) => Effect.Effect<PullRef, ExecError>;
+  ) => Effect.Effect<PullRef, GitHubError>;
 }
 
 class PullData extends Schema.Class<PullData>("PullData")({
@@ -64,6 +66,30 @@ class PullWatch extends Schema.Class<PullWatch>("PullWatch")({
 }) {}
 
 const PullListJson = Schema.Array(PullData);
+
+const decodePullList = (args: ReadonlyArray<string>, out: string) =>
+  Effect.try({
+    try: () => Schema.decodeUnknownSync(PullListJson)(JSON.parse(out)),
+    catch: (err) => new GitHubDecodeError(args, out, String(err)),
+  });
+
+const decodePullView = (args: ReadonlyArray<string>, out: string) =>
+  Effect.try({
+    try: () => Schema.decodeUnknownSync(PullView)(JSON.parse(out)),
+    catch: (err) => new GitHubDecodeError(args, out, String(err)),
+  });
+
+const decodePullWatch = (args: ReadonlyArray<string>, out: string) =>
+  Effect.try({
+    try: () => Schema.decodeUnknownSync(PullWatch)(JSON.parse(out)),
+    catch: (err) => new GitHubDecodeError(args, out, String(err)),
+  });
+
+const decodePullData = (args: ReadonlyArray<string>, out: string) =>
+  Effect.try({
+    try: () => Schema.decodeUnknownSync(PullData)(JSON.parse(out)),
+    catch: (err) => new GitHubDecodeError(args, out, String(err)),
+  });
 
 const ref = (row: PullData) =>
   pullRef({
@@ -105,7 +131,7 @@ export const layer = Layer.effect(
       });
 
       const pulls = Effect.fn("GitHub.pulls")(function* () {
-        const out = yield* run([
+        const args = [
           "pr",
           "list",
           "--state",
@@ -114,33 +140,27 @@ export const layer = Layer.effect(
           "number,headRefName,baseRefName,url,isDraft",
           "--limit",
           "200",
-        ]);
+        ];
+        const out = yield* run(args);
 
-        const rows = yield* Effect.try({
-          try: () => Schema.decodeUnknownSync(PullListJson)(JSON.parse(out)),
-          catch: (err) => new ExecError("gh", ["pr", "list"], 1, String(err)),
-        });
+        const rows = yield* decodePullList(args, out);
 
         return rows.map(ref);
       });
 
-      const pull = Effect.fn("GitHub.pull")((pr: number) =>
-        run([
+      const pull = Effect.fn("GitHub.pull")((pr: number) => {
+        const args = [
           "pr",
           "view",
           `${pr}`,
           "--json",
           "number,title,body,headRefName,baseRefName,url,isDraft,labels",
-        ]).pipe(
-          Effect.flatMap((out) =>
-            Effect.try({
-              try: () => meta(Schema.decodeUnknownSync(PullView)(JSON.parse(out))),
-              catch: (err) =>
-                new ExecError("gh", ["pr", "view", `${pr}`], 1, String(err)),
-            }),
-          ),
-        ),
-      );
+        ];
+        return run(args).pipe(
+          Effect.flatMap((out) => decodePullView(args, out)),
+          Effect.map(meta),
+        );
+      });
 
       const auto = Effect.fn("GitHub.auto")((pr: number) =>
         run([
@@ -170,18 +190,15 @@ export const layer = Layer.effect(
       const wait = Effect.fn("GitHub.wait")((pr: number) =>
         Effect.gen(function* () {
           for (;;) {
-            const out = yield* run([
+            const args = [
               "pr",
               "view",
               `${pr}`,
               "--json",
               "state,mergedAt",
-            ]);
-            const row = yield* Effect.try({
-              try: () => Schema.decodeUnknownSync(PullWatch)(JSON.parse(out)),
-              catch: (err) =>
-                new ExecError("gh", ["pr", "view", `${pr}`], 1, String(err)),
-            });
+            ];
+            const out = yield* run(args);
+            const row = yield* decodePullWatch(args, out);
 
             if (row.mergedAt) return;
             if (row.state !== "OPEN") {
@@ -233,19 +250,16 @@ export const layer = Layer.effect(
           ...labels.flatMap((label) => ["--label", label]),
         ]);
 
-        const out = yield* run([
+        const args = [
           "pr",
           "view",
           branch,
           "--json",
           "number,headRefName,baseRefName,url,isDraft",
-        ]);
+        ];
+        const out = yield* run(args);
 
-        const row = yield* Effect.try({
-          try: () => Schema.decodeUnknownSync(PullData)(JSON.parse(out)),
-          catch: (err) =>
-            new ExecError("gh", ["pr", "view", branch], 1, String(err)),
-        });
+        const row = yield* decodePullData(args, out);
 
         return ref(row);
       });
