@@ -2073,6 +2073,52 @@ describe("Stack", () => {
     }).pipe(Effect.provide(test.layer));
   });
 
+  it.effect("land auto can merge through a target PR", () => {
+    const test = makeLand();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const done = yield* stack.land(undefined, { auto: true, through: "5" });
+
+      expect(done).toContain("enable auto-merge #4 (stack-a)");
+      expect(done).toContain("enable auto-merge #5 (stack-b)");
+      expect(done).toContain("merged through: stack-b");
+      expect(done).not.toContain("enable auto-merge #3 (stack-c)");
+      expect(test.seen).toContain("auto 4");
+      expect(test.seen).toContain("auto 5");
+      expect(test.seen).not.toContain("auto 3");
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land auto rejects a through target outside the stack before merging", () => {
+    const test = makeLand();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const error = yield* Effect.flip(
+        stack.land(undefined, { auto: true, through: "stack-z" }),
+      );
+
+      expect(String(error)).toContain(
+        "stack-z is not in the current stack from stack-a",
+      );
+      expect(test.seen).not.toContain("auto 4");
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land rejects through without auto", () => {
+    const test = makeLand();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const error = yield* Effect.flip(
+        stack.land(undefined, { through: "stack-b" }),
+      );
+
+      expect(String(error)).toContain("use --through only with --auto");
+    }).pipe(Effect.provide(test.layer));
+  });
+
   it.effect("land can force merge with admin privileges", () => {
     const test = makeLand();
 

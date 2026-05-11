@@ -49,6 +49,7 @@ export interface StackService {
       readonly apply?: boolean;
       readonly auto?: boolean;
       readonly admin?: boolean;
+      readonly through?: string;
     },
   ) => Effect.Effect<ReadonlyArray<string>, StackError>;
   readonly sync: (
@@ -966,13 +967,81 @@ ${note}`;
         }),
       );
 
-      const land = Effect.fn("Stack.land")(
+      const landTarget = Effect.fn("Stack.landTarget")((branch?: string) =>
+        Effect.gen(function* () {
+          const [state, refs, pulls, current] = yield* Effect.all([
+            store.read(),
+            git.refs(),
+            github.pulls(),
+            git.current(),
+          ]);
+          const graph = StackGraph.make({
+            state,
+            refs,
+            pulls,
+            trunks: cfg.trunks,
+            current,
+          });
+          const inferred = graph.rootOf(current);
+          const roots = state.links
+            .filter((item) => trunk(String(item.parent)))
+            .map((item) => String(item.branch))
+            .sort((a, b) => a.localeCompare(b));
+          const target =
+            branch ??
+            (state.links.some((item) => item.branch === inferred)
+              ? inferred
+              : roots.length === 1
+                ? roots[0]!
+                : inferred);
+          if (!branch && !state.links.some((item) => item.branch === target)) {
+            if (roots.length > 1) {
+              return yield* Effect.fail(
+                new StackOperationError(
+                  `multiple stack roots found: ${roots.join(", ")}. run: stack merge <branch>`,
+                ),
+              );
+            }
+          }
+          return { state, refs, pulls, current, graph, target };
+        }),
+      );
+
+      const throughTarget = Effect.fn("Stack.land.throughTarget")(
+        (branch: string | undefined, through: string) =>
+          Effect.gen(function* () {
+            const { state, pulls, graph, target } = yield* landTarget(branch);
+            const input = through.trim();
+            const prText = input.startsWith("#") ? input.slice(1) : input;
+            const prNumber = /^\d+$/.test(prText) ? Number(prText) : null;
+            const byPr = prNumber
+              ? (pulls.find((item) => Number(item.number) === prNumber)?.head ??
+                state.links.find((item) => Number(item.pr) === prNumber)?.branch ??
+                null)
+              : null;
+            const throughBranch = byPr ? String(byPr) : input;
+            const chain = graph.explicitChainFor(target);
+            const targetIndex = chain.indexOf(target);
+            const throughIndex = chain.indexOf(throughBranch);
+            if (throughIndex === -1 || throughIndex < targetIndex) {
+              return yield* Effect.fail(
+                new StackOperationError(
+                  `${through} is not in the current stack from ${target}`,
+                ),
+              );
+            }
+            return throughBranch;
+          }),
+      );
+
+      const landOne = Effect.fn("Stack.landOne")(
         (
           branch?: string,
           opts?: {
             readonly apply?: boolean;
             readonly auto?: boolean;
             readonly admin?: boolean;
+            readonly through?: string;
           },
         ) =>
           Effect.gen(function* () {
@@ -992,40 +1061,7 @@ ${note}`;
             const active = apply || auto;
 
             if (active) yield* clean();
-            const [state, refs, pulls, current] = yield* Effect.all([
-              store.read(),
-              git.refs(),
-              github.pulls(),
-              git.current(),
-            ]);
-            const graph = StackGraph.make({
-              state,
-              refs,
-              pulls,
-              trunks: cfg.trunks,
-              current,
-            });
-            const inferred = graph.rootOf(current);
-            const roots = state.links
-              .filter((item) => trunk(String(item.parent)))
-              .map((item) => String(item.branch))
-              .sort((a, b) => a.localeCompare(b));
-            const target =
-              branch ??
-              (state.links.some((item) => item.branch === inferred)
-                ? inferred
-                : roots.length === 1
-                  ? roots[0]!
-                  : inferred);
-            if (!branch && !state.links.some((item) => item.branch === target)) {
-              if (roots.length > 1) {
-                return yield* Effect.fail(
-                  new StackOperationError(
-                    `multiple stack roots found: ${roots.join(", ")}. run: stack merge <branch>`,
-                  ),
-                );
-              }
-            }
+            const { state, refs, pulls, current, target } = yield* landTarget(branch);
             const link =
               state.links.find((item) => item.branch === target) ?? null;
             if (!link) {
@@ -1191,6 +1227,34 @@ ${note}`;
             return [...actions, ...steps, tail];
           }),
       );
+
+      const land: StackService["land"] = Effect.fn("Stack.land")((branch, opts) => {
+        const through = opts?.through;
+        if (!through) return landOne(branch, opts);
+
+        return Effect.gen(function* () {
+          if (!opts?.auto) {
+            return yield* Effect.fail(
+              new StackOperationError("use --through only with --auto"),
+            );
+          }
+
+          const stop = yield* throughTarget(branch, through);
+          const items = new Array<string>();
+          let nextBranch = branch;
+
+          for (;;) {
+            const { target } = yield* landTarget(nextBranch);
+            if (items.length > 0) items.push("");
+            items.push(...(yield* landOne(target, { auto: true })));
+            if (target === stop) {
+              items.push(`merged through: ${stop}`);
+              return items;
+            }
+            nextBranch = undefined;
+          }
+        });
+      });
 
       const undo = Effect.fn("Stack.undo")((apply = false) =>
         Effect.gen(function* () {

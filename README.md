@@ -118,8 +118,6 @@ stack sync               # record inferred links, repair, and refresh PR bodies
 stack merge              # dry-run the next root merge
 stack merge --apply      # merge root and repair descendants
 stack merge --auto       # wait for GitHub requirements, then merge and repair
+stack merge --auto --through <branch-or-pr>
+                          # auto-merge roots one at a time through a target
 ```
-
-Do not run `stack track` defensively when PR bases are already correct. Use it
-only when GitHub PR bases do not encode the stack or when correcting explicit
-local metadata.

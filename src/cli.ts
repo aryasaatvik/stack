@@ -44,6 +44,13 @@ const admin = Flag.boolean("admin").pipe(
   ),
 );
 
+const through = Flag.string("through").pipe(
+  Flag.withDescription(
+    "With --auto, keep merging stack roots until this branch or PR number has landed.",
+  ),
+  Flag.optional,
+);
+
 const dryRun = Flag.boolean("dry-run").pipe(
   Flag.withDescription("Preview the sync workflow without changing branches or PRs."),
 );
@@ -192,19 +199,22 @@ const mergeCommand = Command.make(
     apply,
     auto,
     admin,
+    through,
   },
-  Effect.fn(function* ({ branch, apply, auto, admin }) {
+  Effect.fn(function* ({ branch, apply, auto, admin, through }) {
     const stack = yield* Stack;
+    const throughValue = Option.getOrUndefined(through);
     const items = yield* stack.land(Option.getOrUndefined(branch), {
       apply,
       auto,
       admin,
+      ...(throughValue === undefined ? {} : { through: throughValue }),
     });
     yield* Console.log(items.join("\n"));
   }),
 ).pipe(
   Command.withDescription(
-    "Merge the oldest branch in a stack, preserve a local backup branch, repair descendants, and print the next root branch. If branch is omitted, infer the root from the current branch. By default this is a dry run. Add --apply to merge immediately, --apply --admin to force with admin privileges, or --auto to enable GitHub auto-merge and wait until it lands before repairing descendants.",
+    "Merge the oldest branch in a stack, preserve a local backup branch, repair descendants, and print the next root branch. If branch is omitted, infer the root from the current branch. By default this is a dry run. Add --apply to merge immediately, --apply --admin to force with admin privileges, or --auto to enable GitHub auto-merge and wait until it lands before repairing descendants. Add --auto --through <branch-or-pr> to repeat through a bounded range.",
   ),
   Command.withExamples([
     {
@@ -224,6 +234,11 @@ const mergeCommand = Command.make(
       command: "stack merge effectify-watcher --auto",
       description:
         "Wait for GitHub requirements, then merge and repair descendants",
+    },
+    {
+      command: "stack merge --auto --through effectify-format",
+      description:
+        "Auto-merge roots one at a time until the target branch has landed",
     },
     {
       command: "stack merge effectify-watcher --apply --admin",
