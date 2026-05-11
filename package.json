@@ -1,0 +1,60 @@
+{
+  "name": "@kitlangton/stack",
+  "version": "0.1.2",
+  "description": "Squash-safe stacked PR repair CLI",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kitlangton/stack.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kitlangton/stack/issues"
+  },
+  "homepage": "https://github.com/kitlangton/stack#readme",
+  "keywords": [
+    "git",
+    "github",
+    "pull-requests",
+    "stacked-prs",
+    "cli",
+    "node"
+  ],
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
+  },
+  "bin": {
+    "stack": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "bun run dev/build-cli.ts",
+    "changeset": "npm exec --package @changesets/cli@2.31.0 -- changeset",
+    "changeset:status": "npm exec --package @changesets/cli@2.31.0 -- changeset status",
+    "changeset:version": "npm exec --package @changesets/cli@2.31.0 -- changeset version",
+    "dev": "bun src/cli.ts status",
+    "package:smoke": "bun run build && npm pack --dry-run",
+    "prepack": "bun run build",
+    "release": "bun run package:smoke && npm exec --package @changesets/cli@2.31.0 -- changeset publish",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-beta.64",
+    "effect": "4.0.0-beta.64"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.0-beta.64",
+    "@types/bun": "latest",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.14"
+  }
+}
