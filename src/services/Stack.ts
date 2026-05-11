@@ -330,12 +330,12 @@ ${note}`;
                 const anchor = yield* git.base(branch, parent);
                 if (Option.isSome(anchor)) {
                   const oldParent = String(link.parent);
-                  const oldParentExists = refNames.has(oldParent) || trunks.has(oldParent);
-                  if (!oldParentExists) replayAnchors.set(branch, String(link.anchor));
+                  const oldParentTracked = plannedParents.has(oldParent) || trunks.has(oldParent);
+                  if (!oldParentTracked) replayAnchors.set(branch, String(link.anchor));
                   const next = stackLink({
                     branch,
                     parent,
-                    anchor: oldParentExists ? anchor.value : link.anchor,
+                    anchor: oldParentTracked ? anchor.value : link.anchor,
                     pr: Number(pull.number),
                   });
                   actions.push({
