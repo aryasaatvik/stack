@@ -1,5 +1,14 @@
 # stack
 
+```ts
+╭───STACK───╮
+dev
+└─ #101
+   └─ #102
+      └─ #103
+╰───────────╯
+```
+
 Squash-safe stacked PRs for GitHub repos that squash-merge and delete branches.
 
 `stack` preserves stack intent locally, infers obvious relationships from PR
