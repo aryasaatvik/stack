@@ -119,59 +119,83 @@ export class StatusReport extends Schema.Class<StatusReport>("StatusReport")({
   nodes: Schema.Array(StatusNode),
 }) {}
 
-export class ExecError extends Error {
-  readonly _tag = "ExecError";
-
+export class ExecError extends Schema.TaggedErrorClass<ExecError>()("ExecError", {
+  tool: Schema.String,
+  args: Schema.Array(Schema.String),
+  code: Schema.Number,
+  stderr: Schema.String,
+  message: Schema.String,
+}) {
   constructor(
     readonly tool: string,
     readonly args: ReadonlyArray<string>,
     readonly code: number,
     readonly stderr: string,
   ) {
-    super(`${tool} ${args.join(" ")} failed (${code})`);
+    super({
+      tool,
+      args: Array.from(args),
+      code,
+      stderr,
+      message: `${tool} ${args.join(" ")} failed (${code})`,
+    });
   }
 }
 
-export class StateError extends Error {
-  readonly _tag = "StateError";
-
+export class StateError extends Schema.TaggedErrorClass<StateError>()("StateError", {
+  path: Schema.String,
+  op: Schema.String,
+  detail: Schema.String,
+  message: Schema.String,
+}) {
   constructor(
     readonly path: string,
     readonly op: string,
     readonly detail: string,
   ) {
-    super(`${op} ${path}: ${detail}`);
+    super({ path, op, detail, message: `${op} ${path}: ${detail}` });
   }
 }
 
-export class BranchError extends Error {
-  readonly _tag = "BranchError";
-
+export class BranchError extends Schema.TaggedErrorClass<BranchError>()("BranchError", {
+  branch: Schema.String,
+  message: Schema.String,
+}) {
   constructor(readonly branch: string) {
-    super(`unknown branch: ${branch}`);
+    super({ branch, message: `unknown branch: ${branch}` });
   }
 }
 
-export class MergeBaseError extends Error {
-  readonly _tag = "MergeBaseError";
-
+export class MergeBaseError extends Schema.TaggedErrorClass<MergeBaseError>()(
+  "MergeBaseError",
+  {
+    branch: Schema.String,
+    parent: Schema.String,
+    message: Schema.String,
+  },
+) {
   constructor(
     readonly branch: string,
     readonly parent: string,
   ) {
-    super(`no merge base for ${branch} and ${parent}`);
+    super({ branch, parent, message: `no merge base for ${branch} and ${parent}` });
   }
 }
 
-export class DirtyWorktreeError extends Error {
-  readonly _tag = "DirtyWorktreeError";
-
+export class DirtyWorktreeError extends Schema.TaggedErrorClass<DirtyWorktreeError>()(
+  "DirtyWorktreeError",
+  {
+    lines: Schema.Array(Schema.String),
+    message: Schema.String,
+  },
+) {
   constructor(readonly lines: ReadonlyArray<string>) {
-    super(
-      lines.length > 0
+    super({
+      lines: Array.from(lines),
+      message: lines.length > 0
         ? `worktree is dirty:\n${lines.join("\n")}`
         : "worktree is dirty",
-    );
+    });
   }
 }
 
