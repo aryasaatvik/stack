@@ -1,5 +1,11 @@
 # @kitlangton/stack
 
+## 0.1.5
+
+### Patch Changes
+
+- Scope `stack sync` to the current or requested stack, and add keep-going sync for independent stacks.
+
 ## 0.1.4
 
 ### Patch Changes
