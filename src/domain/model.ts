@@ -203,9 +203,10 @@ export class StackOperationError extends Schema.TaggedErrorClass<StackOperationE
   }
 }
 
-export class GitHubDecodeError extends Schema.TaggedErrorClass<GitHubDecodeError>()(
-  "GitHubDecodeError",
+export class ForgeDecodeError extends Schema.TaggedErrorClass<ForgeDecodeError>()(
+  "ForgeDecodeError",
   {
+    tool: Schema.String,
     args: Schema.Array(Schema.String),
     output: Schema.String,
     detail: Schema.String,
@@ -213,24 +214,26 @@ export class GitHubDecodeError extends Schema.TaggedErrorClass<GitHubDecodeError
   },
 ) {
   constructor(
+    readonly tool: string,
     readonly args: ReadonlyArray<string>,
     readonly output: string,
     readonly detail: string,
   ) {
     super({
+      tool,
       args: Array.from(args),
       output,
       detail,
-      message: `gh ${args.join(" ")} returned invalid JSON`,
+      message: `${tool} ${args.join(" ")} returned invalid JSON`,
     });
   }
 }
 
 export type StoreError = StateError;
-export type GitHubError = ExecError | GitHubDecodeError;
+export type ForgeError = ExecError | ForgeDecodeError;
 export type StackError =
   | ExecError
-  | GitHubDecodeError
+  | ForgeDecodeError
   | StateError
   | BranchError
   | MergeBaseError

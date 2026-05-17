@@ -14,8 +14,8 @@ import { BranchError, DirtyWorktreeError, ExecError, MergeBaseError } from "./do
 import { renderStatus } from "./format.ts";
 import * as Proc from "./platform/proc.ts";
 import { StackConfig, trunks } from "./services/Config.ts";
+import * as ForgeGitHub from "./services/forge/github.ts";
 import * as Git from "./services/Git.ts";
-import * as GitHub from "./services/GitHub.ts";
 import * as Progress from "./services/Progress.ts";
 import { Stack } from "./services/Stack.ts";
 import { Store } from "./services/Store.ts";
@@ -330,12 +330,12 @@ const live = (() => {
   ).pipe(Layer.provideMerge(proc));
 
   const git = Git.live.pipe(Layer.provide(cfg));
-  const github = GitHub.layer.pipe(Layer.provide(cfg));
+  const forge = ForgeGitHub.layer.pipe(Layer.provide(cfg));
   const store = Store.live.pipe(Layer.provideMerge(cfg));
   return Stack.layer.pipe(
     Layer.provideMerge(cfg),
     Layer.provideMerge(git),
-    Layer.provideMerge(github),
+    Layer.provideMerge(forge),
     Layer.provideMerge(Progress.live),
     Layer.provideMerge(store),
   );

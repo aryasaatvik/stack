@@ -20,8 +20,9 @@ import { renderStatus } from "../src/format.ts";
 import * as Proc from "../src/platform/proc.ts";
 import * as StackGraph from "../src/stackGraph.ts";
 import { StackConfig } from "../src/services/Config.ts";
+import * as Forge from "../src/services/Forge.ts";
+import * as ForgeGitHub from "../src/services/forge/github.ts";
 import * as Git from "../src/services/Git.ts";
-import * as GitHub from "../src/services/GitHub.ts";
 import * as Progress from "../src/services/Progress.ts";
 import { Stack } from "../src/services/Stack.ts";
 import { Store } from "../src/services/Store.ts";
@@ -60,10 +61,10 @@ const metaFor = (pull: ReturnType<typeof pullRef>, body = "body") =>
     labels: [],
   });
 
-const gitAndGithub = (service: Partial<Git.Interface & GitHub.Interface>) => {
+const gitAndGithub = (service: Partial<Git.Interface & Forge.Interface>) => {
   const unused = (tool: string, args: ReadonlyArray<string>) =>
     new ExecError(tool, args, 1, "unused test service");
-  const defaults: Git.Interface & GitHub.Interface = {
+  const defaults: Git.Interface & Forge.Interface = {
     dirty: () => Effect.succeed([]),
     fetch: () => Effect.void,
     refs: () => Effect.succeed([]),
@@ -93,7 +94,7 @@ const gitAndGithub = (service: Partial<Git.Interface & GitHub.Interface>) => {
 
   return Layer.mergeAll(
     Layer.succeed(Git.Service, Git.Service.of(impl)),
-    Layer.succeed(GitHub.Service, GitHub.Service.of(impl)),
+    Layer.succeed(Forge.Service, Forge.Service.of(impl)),
   );
 };
 
@@ -107,7 +108,7 @@ const stackTestLayer = (opts: {
   readonly bases?: Readonly<Record<string, string>>;
   readonly current?: string;
   readonly state?: StackState;
-  readonly service?: Partial<Git.Interface & GitHub.Interface>;
+  readonly service?: Partial<Git.Interface & Forge.Interface>;
   readonly progress?: Array<Progress.ProgressEvent>;
 }) => {
   const pulls = opts.pulls ?? [];
@@ -166,7 +167,7 @@ const integrationGitHub = (opts: {
   readonly log: Array<string>;
 }) =>
   Layer.effect(
-    GitHub.Service,
+    Forge.Service,
     Effect.gen(function* () {
       const proc = yield* Proc.Service;
       const pulls = yield* Ref.make(Array.from(opts.pulls));
@@ -283,7 +284,7 @@ const integrationGitHub = (opts: {
           yield* Ref.update(pulls, (items) => items.filter((item) => item.number !== pr));
         });
 
-      return GitHub.Service.of({
+      return Forge.Service.of({
         auto: (pr) => record(`auto ${pr}`),
         merge,
         wait: (pr) => record(`wait ${pr}`),
@@ -443,7 +444,7 @@ const make = (state = new StackState({ version: 1, links: [] })) =>
       }),
     ),
     Layer.provideMerge(
-      GitHub.memory({
+      ForgeGitHub.memory({
         pulls: [
           pullRef({
             number: 17544,
@@ -1185,11 +1186,11 @@ describe("GitHub", () => {
     const cfgLayer = StackConfig.layer({
       root: "/tmp/stack",
       trunks: ["dev"],
-      githubWaitIntervalMillis: 1_000,
+      forgeWaitIntervalMillis: 1_000,
     }).pipe(Layer.provide(NodeServices.layer));
 
     return Effect.gen(function* () {
-      const github = yield* GitHub.Service;
+      const github = yield* Forge.Service;
       const fiber = yield* github.wait(4).pipe(Effect.forkChild({ startImmediately: true }));
       yield* Effect.yieldNow;
       expect(calls).toHaveLength(1);
@@ -1201,7 +1202,9 @@ describe("GitHub", () => {
       yield* Fiber.join(fiber);
       expect(calls).toHaveLength(2);
     }).pipe(
-      Effect.provide(GitHub.layer.pipe(Layer.provideMerge(cfgLayer), Layer.provideMerge(proc))),
+      Effect.provide(
+        ForgeGitHub.layer.pipe(Layer.provideMerge(cfgLayer), Layer.provideMerge(proc)),
+      ),
     );
   });
 });
@@ -2274,7 +2277,7 @@ describe("Stack", () => {
         Layer.provideMerge(cfgLayer),
         Layer.provideMerge(Git.live.pipe(Layer.provide(cfgLayer))),
         Layer.provideMerge(
-          GitHub.memory({
+          ForgeGitHub.memory({
             pulls: [
               pullRef({
                 number: 2,
