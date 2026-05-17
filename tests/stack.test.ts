@@ -18,6 +18,7 @@ import {
 } from "../src/domain/model.ts";
 import { renderStatus } from "../src/format.ts";
 import * as Proc from "../src/platform/proc.ts";
+import * as StackBlock from "../src/stackBlock.ts";
 import * as StackGraph from "../src/stackGraph.ts";
 import { StackConfig } from "../src/services/Config.ts";
 import * as Forge from "../src/services/Forge.ts";
@@ -2810,4 +2811,115 @@ describe("Forge", () => {
       expect(after).toHaveLength(0);
     }).pipe(Effect.provide(ForgeGitLab.memory())),
   );
+});
+
+describe("StackBlock", () => {
+  const pulls = [
+    pullRef({ number: 1, head: "feat/a", base: "main", url: "u1", draft: false }),
+    pullRef({ number: 2, head: "feat/b", base: "feat/a", url: "u2", draft: false }),
+    pullRef({ number: 3, head: "feat/c", base: "feat/b", url: "u3", draft: false }),
+  ];
+
+  it("renders GitHub PR references with the # prefix by default", () => {
+    const block = StackBlock.render({
+      pulls,
+      metas: new Map(),
+      chain: ["feat/a", "feat/b", "feat/c"],
+      branch: "feat/b",
+      previous: "",
+    });
+    expect(block).toContain("1. #1");
+    expect(block).toContain("2. **#2** 👈 current");
+    expect(block).toContain("3. #3");
+  });
+
+  it("renders GitLab MR references with the ! prefix when refPrefix is set", () => {
+    const block = StackBlock.render({
+      pulls,
+      metas: new Map(),
+      chain: ["feat/a", "feat/b", "feat/c"],
+      branch: "feat/c",
+      previous: "",
+      refPrefix: "!",
+    });
+    expect(block).toContain("1. !1");
+    expect(block).toContain("2. !2");
+    expect(block).toContain("3. **!3** 👈 current");
+    expect(block).not.toContain("#1");
+  });
+
+  it("parses both # and ! prefixed entries from a previous block", () => {
+    const previous = `body before
+
+<!-- stack:links:start -->
+### [Stack](https://github.com/kitlangton/stack)
+
+1. !1
+2. !2
+3. **!3** 👈 current
+<!-- stack:links:end -->`;
+    const block = StackBlock.render({
+      pulls: [pulls[2]!],
+      metas: new Map(),
+      chain: ["feat/c"],
+      branch: "feat/c",
+      previous,
+      refPrefix: "!",
+    });
+    expect(block).toContain("**!3** 👈 current");
+  });
+
+  it("does not duplicate live entries when prefix migrates between syncs", () => {
+    const previous = `body before
+
+<!-- stack:links:start -->
+### [Stack](https://github.com/kitlangton/stack)
+
+1. #1
+2. #2
+3. **#3** 👈 current
+<!-- stack:links:end -->`;
+    const block = StackBlock.render({
+      pulls,
+      metas: new Map(),
+      chain: ["feat/a", "feat/b", "feat/c"],
+      branch: "feat/c",
+      previous,
+      refPrefix: "!",
+    });
+    expect(block).not.toContain("#1");
+    expect(block).not.toContain("#2");
+    expect(block).not.toContain("#3");
+    expect(block).toContain("1. !1");
+    expect(block).toContain("2. !2");
+    expect(block).toContain("3. **!3** 👈 current");
+  });
+});
+
+describe("StackGraph trunk display", () => {
+  it("treeFromStatus picks the trunk that is actually referenced as a parent", () => {
+    const graph = StackGraph.make({
+      state: stackState([stackLink({ branch: "feat/a", parent: "main", anchor: "x", pr: 1 })]),
+      refs: [
+        branchRef({ name: "dev", head: "d" }),
+        branchRef({ name: "main", head: "m" }),
+        branchRef({ name: "feat/a", head: "a" }),
+      ],
+      pulls: [pullRef({ number: 1, head: "feat/a", base: "main", url: "u1", draft: false })],
+      trunks: ["dev", "main", "master"],
+      current: "feat/a",
+    });
+    expect(graph.tree.trunk).toBe("main");
+  });
+
+  it("treeFromStatus falls back to first trunk when none is referenced", () => {
+    const graph = StackGraph.make({
+      state: stackState([]),
+      refs: [],
+      pulls: [],
+      trunks: ["dev", "main"],
+      current: "",
+    });
+    expect(graph.tree.trunk).toBe("dev");
+  });
 });

@@ -68,6 +68,14 @@ export class Stack extends Context.Service<Stack, StackService>()("@stack/Stack"
       const progress = yield* Progress.Service;
       const store = yield* Store;
 
+      const initialRemote = yield* git
+        .remote()
+        .pipe(Effect.catch(() => Effect.succeed(Option.none<string>())));
+      const forgeKind = Option.isSome(initialRemote)
+        ? (Forge.detect(initialRemote.value)?.kind ?? null)
+        : null;
+      const refPrefix = forgeKind === "gitlab" ? "!" : "#";
+
       const draft = (link: StackLink, parent: string, old: PullMeta | null) => {
         if (!old) {
           return {
@@ -1123,6 +1131,7 @@ ${note}`;
                       completed,
                       branch: String(pull.head),
                       previous: meta.body,
+                      refPrefix,
                     }),
                   );
                   if (next === meta.body) return null;
@@ -1335,7 +1344,7 @@ ${note}`;
               return yield* Effect.fail(new StackOperationError(`no open PR found for ${target}`));
             }
 
-            const root = cfg.trunks[0] ?? branchName("dev");
+            const root = link.parent;
             const stamp = yield* timestamp();
             const name = `backup/landed-${stamp}-${target}`;
             const hasLocalTarget = refs.some((item) => item.name === target);
@@ -1498,7 +1507,11 @@ ${note}`;
 
           const mode = apply ? "" : "would ";
           const actions: Array<string> = [];
-          const trunk = cfg.trunks[0] ?? branchName("dev");
+          const trunks = new Set(cfg.trunks.map(String));
+          const stateTrunk = run.state.links.find((link) =>
+            trunks.has(String(link.parent)),
+          )?.parent;
+          const trunk = stateTrunk ?? cfg.trunks[0] ?? branchName("dev");
           const restore = new Set(
             run.entries.flatMap((item) => (item.backup ? [String(item.branch)] : [])),
           );
