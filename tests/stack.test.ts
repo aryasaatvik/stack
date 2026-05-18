@@ -1798,6 +1798,49 @@ describe("Stack", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("sync pushes stale fork heads even when the local stack is current", () => {
+    const seen: Array<string> = [];
+    const refs = [ref("dev", "dev-head"), ref("stack-a", "stack-a-local")];
+    const layer = stackTestLayer({
+      refs,
+      pulls: [
+        pullRef({
+          number: 10,
+          head: "stack-a",
+          headRepository: "kitlangton/opencode",
+          base: "dev",
+          url: "u10",
+          draft: false,
+        }),
+      ],
+      bases: bases(["stack-a", "dev", "dev-head"]),
+      state: stackState([
+        stackLink({ branch: "stack-a", parent: "dev", anchor: "dev-head", pr: 10 }),
+      ]),
+      service: {
+        remotes: () =>
+          Effect.succeed([
+            { name: "origin", url: "git@github.com:anomalyco/opencode.git" },
+            { name: "fork", url: "git@github.com:kitlangton/opencode.git" },
+          ]),
+        head: (name) =>
+          Effect.succeed(
+            Option.fromNullishOr(name === "fork/stack-a" ? "stack-a-stale" : refsHead(refs, name)),
+          ),
+        push: (branch, remote = "origin") =>
+          Effect.sync(() => void seen.push(`push ${branch} ${remote}`)),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const lines = yield* stack.sync();
+
+      expect(seen).toEqual(["push stack-a fork"]);
+      expect(lines).toContain("└─ ✓ stack-a #10 pushed to fork");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("sync dry-run previews without mutating", () => {
     const test = makeSync();
 

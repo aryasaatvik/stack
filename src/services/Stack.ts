@@ -183,12 +183,12 @@ ${note}`;
         for (const list of children.values()) list.sort((a, b) => a.localeCompare(b));
 
         const rebased = new Map<string, string>();
-        const pushed = new Set<string>();
+        const pushed = new Map<string, ReadonlyArray<string>>();
         const updatedPrs = new Set<number>();
         let backups = 0;
         for (const action of opts.actions) {
           if (action._tag === "Rebase") rebased.set(action.branch, action.parent);
-          if (action._tag === "Push") pushed.add(action.branch);
+          if (action._tag === "Push") pushed.set(action.branch, action.remotes);
           if (action._tag === "Backup") backups += 1;
           if (action._tag === "UpdateStackLinks") updatedPrs.add(action.pr);
         }
@@ -225,6 +225,14 @@ ${note}`;
                   icon: pushed.has(branch) ? "✓" : "◌",
                   note: `rebased onto ${parent}`,
                 };
+          }
+          const remotes = pushed.get(branch);
+          if (remotes) {
+            const remoteText =
+              remotes.length === 1 && remotes[0] === "origin" ? "" : ` to ${remotes.join(", ")}`;
+            return opts.mode === "dry-run"
+              ? { icon: "◌", note: `would push${remoteText}` }
+              : { icon: "✓", note: `pushed${remoteText}` };
           }
           return { icon: "●", note: "" };
         };
@@ -638,6 +646,33 @@ ${note}`;
               return [...remotes];
             });
 
+            const stalePushRemotes = Effect.fn("Stack.repairStack.stalePushRemotes")(function* (
+              branch: string,
+              remotes: ReadonlyArray<string>,
+            ) {
+              const head = heads.get(branch);
+              if (!head) return [];
+              return yield* Effect.filter(remotes, (remote) =>
+                git
+                  .head(`${remote}/${branch}`)
+                  .pipe(
+                    Effect.map(
+                      (remoteHead) => Option.isSome(remoteHead) && remoteHead.value !== head,
+                    ),
+                  ),
+              );
+            });
+
+            const pushBranch = Effect.fn("Stack.repairStack.pushBranch")(function* (
+              branch: string,
+              remotes: ReadonlyArray<string>,
+            ) {
+              for (const remote of remotes) {
+                yield* step(remote === "origin" ? `push ${branch}` : `push ${branch} to ${remote}`);
+                yield* git.push(branch, remote);
+              }
+            });
+
             for (const link of state.links) {
               const match = refs
                 .map((ref) => ref.name)
@@ -723,6 +758,7 @@ ${note}`;
               let backup: string | null = null;
               let created: number | null = null;
               let num = pr?.number ?? link.pr;
+              const targetRemotes = yield* pushRemotes(String(link.branch), pr);
 
               if (drift) {
                 const anchor = replayAnchors.get(String(link.branch));
@@ -740,7 +776,7 @@ ${note}`;
                   onto,
                   backup,
                   commits: commitsToReplay,
-                  pushRemotes: yield* pushRemotes(String(link.branch), pr),
+                  pushRemotes: targetRemotes,
                 } satisfies RepairPlan.RebaseBranchPlan;
                 actions.push(...RepairPlan.rebaseBranch(rebase, mode));
 
@@ -765,14 +801,7 @@ ${note}`;
                     .pipe(
                       Effect.mapError((err) => replayFailure(rebase, err, state, pulls, actions)),
                     );
-                  for (const remote of rebase.pushRemotes) {
-                    yield* step(
-                      remote === "origin"
-                        ? `push ${rebase.branch}`
-                        : `push ${rebase.branch} to ${remote}`,
-                    );
-                    yield* git.push(rebase.branch, remote);
-                  }
+                  yield* pushBranch(rebase.branch, rebase.pushRemotes);
                   const tip = yield* git.head(link.branch);
                   const head = Option.isSome(tip)
                     ? tip.value
@@ -784,6 +813,14 @@ ${note}`;
                 }
 
                 moved.add(link.branch);
+              } else {
+                const stale = pr?.headRepository
+                  ? yield* stalePushRemotes(String(link.branch), targetRemotes)
+                  : [];
+                if (stale.length > 0) {
+                  actions.push({ _tag: "Push", mode, branch: String(link.branch), remotes: stale });
+                  if (apply) yield* pushBranch(String(link.branch), stale);
+                }
               }
 
               const now = prs.get(link.branch) ?? null;
