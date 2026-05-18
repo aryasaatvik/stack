@@ -69,6 +69,7 @@ const gitAndGithub = (service: Partial<Git.Interface & Forge.Interface>) => {
   const defaults: Git.Interface & Forge.Interface = {
     dirty: () => Effect.succeed([]),
     fetch: () => Effect.void,
+    remotes: () => Effect.succeed([]),
     refs: () => Effect.succeed([]),
     current: () => Effect.succeed(""),
     remote: () => Effect.succeed(Option.none()),
@@ -1719,6 +1720,82 @@ describe("Stack", () => {
       expect(state.links.find((item) => item.branch === "stack-b")?.pr).toBe(5);
       expect(state.links.find((item) => item.branch === "stack-c")?.anchor).toBe("stack-b-2");
     }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("sync pushes fork PR heads and upstream base mirrors", () => {
+    const seen: Array<string> = [];
+    const refs = new Map([
+      ["dev", ref("dev", "dev-new")],
+      ["stack-a", ref("stack-a", "stack-a-head")],
+      ["stack-b", ref("stack-b", "stack-b-head")],
+    ]);
+    const baseMap = new Map(
+      Object.entries(bases(["stack-a", "dev", "dev-old"], ["stack-b", "stack-a", "stack-a-old"])),
+    );
+    const layer = stackTestLayer({
+      refs: [...refs.values()],
+      pulls: [
+        pullRef({
+          number: 10,
+          head: "stack-a",
+          headRepository: "kitlangton/opencode",
+          base: "dev",
+          url: "u10",
+          draft: false,
+        }),
+        pullRef({
+          number: 11,
+          head: "stack-b",
+          headRepository: "kitlangton/opencode",
+          base: "stack-a",
+          url: "u11",
+          draft: false,
+        }),
+      ],
+      bases: Object.fromEntries(baseMap),
+      state: stackState([
+        stackLink({ branch: "stack-a", parent: "dev", anchor: "dev-old", pr: 10 }),
+        stackLink({ branch: "stack-b", parent: "stack-a", anchor: "stack-a-old", pr: 11 }),
+      ]),
+      service: {
+        refs: () => Effect.succeed([...refs.values()]),
+        remotes: () =>
+          Effect.succeed([
+            { name: "origin", url: "git@github.com:anomalyco/opencode.git" },
+            { name: "fork", url: "git@github.com:kitlangton/opencode.git" },
+          ]),
+        head: (name) =>
+          Effect.succeed(
+            Option.fromNullishOr(
+              refs.get(name)?.head ??
+                (name.startsWith("origin/") ? refs.get(name.slice(7))?.head : undefined),
+            ),
+          ),
+        base: (branch, parent) =>
+          Effect.succeed(Option.fromNullishOr(baseMap.get(`${branch}:${parent}`))),
+        replay: (branch, parent) =>
+          Effect.sync(() => {
+            seen.push(`rebase ${branch} ${parent}`);
+            refs.set(branch, ref(branch, `${branch}-rebased`));
+            baseMap.set(
+              `${branch}:${parent}`,
+              refs.get(parent.startsWith("origin/") ? parent.slice(7) : parent)?.head ?? "",
+            );
+          }),
+        push: (branch, remote = "origin") =>
+          Effect.sync(() => void seen.push(`push ${branch} ${remote}`)),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync();
+
+      expect(seen).toContain("push stack-a fork");
+      expect(seen).toContain("push stack-a origin");
+      expect(seen).toContain("push stack-b fork");
+      expect(seen).not.toContain("push stack-b origin");
+    }).pipe(Effect.provide(layer));
   });
 
   it.effect("sync dry-run previews without mutating", () => {

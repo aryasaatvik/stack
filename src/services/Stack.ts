@@ -604,12 +604,39 @@ ${note}`;
             const live = new Map(refs.map((ref) => [String(ref.name), ref]));
             const heads = new Map(refs.map((ref) => [String(ref.name), ref.head]));
             const prs = new Map(pulls.map((pull) => [String(pull.head), pull]));
+            const childBases = new Set(pulls.map((pull) => String(pull.base)));
+            const remoteByRepository = new Map<string, string>(
+              (yield* git.remotes()).flatMap((remote): Array<[string, string]> => {
+                const info = Forge.detect(remote.url);
+                return info ? [[`${info.owner}/${info.repo}`, remote.name]] : [];
+              }),
+            );
             const tips = new Map<string, string | null>();
             const prior = new Map<string, string>();
             const moved = new Set<string>();
             const entries: Array<UndoEntry> = [];
             const next: Array<StackLink> = [];
             let journal = apply && initialActions.length > 0;
+
+            const headRemote = (pull: PullRef | null) => {
+              if (!pull?.headRepository) return Effect.succeed("origin");
+              const remote = remoteByRepository.get(pull.headRepository);
+              if (remote) return Effect.succeed(remote);
+              return Effect.fail(
+                new StackOperationError(
+                  `PR #${pull.number} head is ${pull.headRepository}, but no local git remote points to that repository`,
+                ),
+              );
+            };
+
+            const pushRemotes = Effect.fn("Stack.repairStack.pushRemotes")(function* (
+              branch: string,
+              pull: PullRef | null,
+            ) {
+              const remotes = new Set<string>([yield* headRemote(pull)]);
+              if (childBases.has(branch)) remotes.add("origin");
+              return [...remotes];
+            });
 
             for (const link of state.links) {
               const match = refs
@@ -713,6 +740,7 @@ ${note}`;
                   onto,
                   backup,
                   commits: commitsToReplay,
+                  pushRemotes: yield* pushRemotes(String(link.branch), pr),
                 } satisfies RepairPlan.RebaseBranchPlan;
                 actions.push(...RepairPlan.rebaseBranch(rebase, mode));
 
@@ -737,8 +765,14 @@ ${note}`;
                     .pipe(
                       Effect.mapError((err) => replayFailure(rebase, err, state, pulls, actions)),
                     );
-                  yield* step(`push ${rebase.branch}`);
-                  yield* git.push(rebase.branch);
+                  for (const remote of rebase.pushRemotes) {
+                    yield* step(
+                      remote === "origin"
+                        ? `push ${rebase.branch}`
+                        : `push ${rebase.branch} to ${remote}`,
+                    );
+                    yield* git.push(rebase.branch, remote);
+                  }
                   const tip = yield* git.head(link.branch);
                   const head = Option.isSome(tip)
                     ? tip.value
@@ -768,6 +802,7 @@ ${note}`;
                   pullRef({
                     number: now.number,
                     head: now.head,
+                    headRepository: now.headRepository,
                     base: parent,
                     url: now.url,
                     draft: now.draft,
@@ -1379,6 +1414,7 @@ ${note}`;
                 ? pullRef({
                     number: item.number,
                     head: item.head,
+                    headRepository: item.headRepository,
                     base: retarget.base,
                     url: item.url,
                     draft: item.draft,

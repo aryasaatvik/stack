@@ -19,6 +19,7 @@ class PullData extends Schema.Class<PullData>("PullData")({
   number: Schema.Number,
   title: Schema.String,
   headRefName: Schema.String,
+  headRepository: Schema.NullOr(Schema.Struct({ nameWithOwner: Schema.String })),
   baseRefName: Schema.String,
   url: Schema.String,
   isDraft: Schema.Boolean,
@@ -29,6 +30,7 @@ class PullView extends Schema.Class<PullView>("PullView")({
   title: Schema.String,
   body: Schema.String,
   headRefName: Schema.String,
+  headRepository: Schema.NullOr(Schema.Struct({ nameWithOwner: Schema.String })),
   baseRefName: Schema.String,
   url: Schema.String,
   isDraft: Schema.Boolean,
@@ -75,6 +77,7 @@ const ref = (row: PullData) =>
     number: row.number,
     title: row.title,
     head: row.headRefName,
+    headRepository: row.headRepository?.nameWithOwner ?? null,
     base: row.baseRefName,
     url: row.url,
     draft: row.isDraft,
@@ -86,6 +89,7 @@ const meta = (row: PullView) =>
     title: row.title,
     body: row.body,
     head: row.headRefName,
+    headRepository: row.headRepository?.nameWithOwner ?? null,
     base: row.baseRefName,
     url: row.url,
     draft: row.isDraft,
@@ -113,7 +117,7 @@ export const layer = Layer.effect(
         "--state",
         "open",
         "--json",
-        "number,title,headRefName,baseRefName,url,isDraft",
+        "number,title,headRefName,headRepository,baseRefName,url,isDraft",
         "--limit",
         "200",
       ];
@@ -128,7 +132,7 @@ export const layer = Layer.effect(
         "view",
         `${pr}`,
         "--json",
-        "number,title,body,headRefName,baseRefName,url,isDraft,labels",
+        "number,title,body,headRefName,headRepository,baseRefName,url,isDraft,labels",
       ];
       return run(args).pipe(
         Effect.flatMap((out) => decodePullView(args, out)),
@@ -204,7 +208,7 @@ export const layer = Layer.effect(
         "view",
         branch,
         "--json",
-        "number,title,headRefName,baseRefName,url,isDraft",
+        "number,title,headRefName,headRepository,baseRefName,url,isDraft",
       ];
       const out = yield* run(args);
       const row = yield* decodePullData(args, out);
@@ -259,6 +263,7 @@ export const memory = (
                         title: `stack: ${found.head}`,
                         body: "",
                         head: found.head,
+                        headRepository: found.headRepository,
                         base: found.base,
                         url: found.url,
                         draft: found.draft,
@@ -282,6 +287,7 @@ export const memory = (
                     number: item.number,
                     title: item.title,
                     head: item.head,
+                    headRepository: item.headRepository,
                     base,
                     url: item.url,
                     draft: item.draft,
@@ -305,6 +311,7 @@ export const memory = (
                   title: current.title,
                   body,
                   head: current.head,
+                  headRepository: current.headRepository,
                   base: current.base,
                   url: current.url,
                   draft: current.draft,
