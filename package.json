@@ -57,9 +57,9 @@
   "devDependencies": {
     "@effect/vitest": "4.0.0-beta.64",
     "@types/bun": "latest",
-    "oxfmt": "^0.49.0",
-    "oxlint": "^1.64.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.14"
+    "oxfmt": "^0.51.0",
+    "oxlint": "^1.66.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.7"
   }
 }
