@@ -290,6 +290,13 @@ ${note}`;
           scoped.links,
         );
 
+      const writeScopedState = (branches: ReadonlySet<string>) =>
+        Effect.fn("Stack.writeScopedState")((next: ReturnType<typeof stackState>) =>
+          store
+            .read()
+            .pipe(Effect.flatMap((latest) => store.write(mergeState(latest, branches, next)))),
+        );
+
       const actionBranch = (action: StackResult.StackResultItem) => {
         switch (action._tag) {
           case "Text":
@@ -965,16 +972,7 @@ ${note}`;
                         ),
                       )
                     : reconciled.replayAnchors;
-                  const writeState = target
-                    ? (next: ReturnType<typeof stackState>) =>
-                        store
-                          .read()
-                          .pipe(
-                            Effect.flatMap((latest) =>
-                              store.write(mergeState(latest, target.branches, next)),
-                            ),
-                          )
-                    : undefined;
+                  const writeState = target ? writeScopedState(target.branches) : undefined;
                   const repair = yield* repairStack(scoped, refs, pulls, {
                     apply: !dryRun,
                     journalState: state,
@@ -983,7 +981,15 @@ ${note}`;
                     ...(writeState ? { writeState } : {}),
                     preserveUndo,
                   });
-                  const notes = yield* linksFor(scoped, !dryRun, new Set(), pulls);
+                  const notesPulls = dryRun ? pulls : yield* github.pulls();
+                  const notes = yield* linksFor(
+                    repair.state,
+                    !dryRun,
+                    new Set(),
+                    target
+                      ? notesPulls.filter((pull) => target.branches.has(String(pull.head)))
+                      : notesPulls,
+                  );
                   const changed = repair.actions.length > 0 || notes.actions.length > 0;
                   const lines = !changed
                     ? renderSyncTree({
@@ -1339,6 +1345,9 @@ ${note}`;
               );
             }
 
+            const branches = scopedBranches(state, target);
+            const scopedState = filterState(state, branches);
+
             const pr = pulls.find((item) => item.head === target) ?? null;
             if (!pr) {
               return yield* Effect.fail(new StackOperationError(`no open PR found for ${target}`));
@@ -1348,9 +1357,9 @@ ${note}`;
             const stamp = yield* timestamp();
             const name = `backup/landed-${stamp}-${target}`;
             const hasLocalTarget = refs.some((item) => item.name === target);
-            const next = state.links.find((item) => item.parent === target)?.branch ?? null;
+            const next = scopedState.links.find((item) => item.parent === target)?.branch ?? null;
             const landed = new Set([`#${pr.number}`, String(target)]);
-            const preRetargets = state.links
+            const preRetargets = scopedState.links
               .filter((item) => item.parent === target)
               .flatMap((child) => {
                 const childPr = pulls.find((item) => item.head === child.branch);
@@ -1407,13 +1416,27 @@ ${note}`;
                   git.refs(),
                   github.pulls(),
                 ]);
+                const scopedNextState = filterState(nextState, branches);
                 const repair = yield* repairStack(
-                  nextState,
+                  scopedNextState,
                   nextRefs.filter((item) => item.name !== target),
-                  nextPulls.filter((item) => item.head !== target),
-                  { apply: true, saved: new Map([[target, name]]) },
+                  nextPulls.filter(
+                    (item) => item.head !== target && branches.has(String(item.head)),
+                  ),
+                  {
+                    apply: true,
+                    saved: new Map([[target, name]]),
+                    journalState: nextState,
+                    writeState: writeScopedState(branches),
+                  },
                 );
-                const notes = yield* linksFor(null, true, landed);
+                const repairedPulls = yield* github.pulls();
+                const notes = yield* linksFor(
+                  repair.state,
+                  true,
+                  landed,
+                  repairedPulls.filter((item) => branches.has(String(item.head))),
+                );
                 if (current !== target) yield* git.switch(current);
                 const tail = next ? `next root: ${next}` : "next root: none";
                 const view = yield* diagram();
@@ -1462,9 +1485,11 @@ ${note}`;
             }
 
             const repair = yield* repairStack(
-              state,
+              scopedState,
               refs.filter((item) => item.name !== target),
-              plannedPulls.filter((item) => item.head !== target),
+              plannedPulls.filter(
+                (item) => item.head !== target && branches.has(String(item.head)),
+              ),
               { apply: false },
             );
             const tail = next ? `next root: ${next}` : "next root: none";

@@ -1474,6 +1474,99 @@ describe("Stack", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("scoped sync ignores stale and independent recorded stacks", () => {
+    const layer = stackTestLayer({
+      current: "active-child",
+      refs: [
+        ref("dev", "dev-new"),
+        ref("active-root", "active-root"),
+        ref("active-child", "active-child"),
+        ref("other-root", "other-root"),
+        ref("other-child", "other-child"),
+        ref("stale", "stale"),
+      ],
+      pulls: [
+        pr(1, "active-root", "dev"),
+        pr(2, "active-child", "active-root"),
+        pr(3, "other-root", "dev"),
+        pr(4, "other-child", "other-root"),
+      ],
+      bases: bases(
+        ["active-root", "dev", "dev-new"],
+        ["active-child", "active-root", "active-root"],
+        ["other-root", "dev", "dev-old"],
+        ["other-child", "other-root", "other-old"],
+      ),
+      state: stackState([
+        stackLink({ branch: "active-root", parent: "dev", anchor: "dev-new", pr: 1 }),
+        stackLink({ branch: "active-child", parent: "active-root", anchor: "active-root", pr: 2 }),
+        stackLink({ branch: "other-root", parent: "dev", anchor: "dev-old", pr: 3 }),
+        stackLink({ branch: "other-child", parent: "other-root", anchor: "other-old", pr: 4 }),
+        stackLink({ branch: "stale", parent: "dev", anchor: "dev-old", pr: 5 }),
+      ]),
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      const items = yield* stack.sync({ branch: "active-child", dryRun: true });
+      const output = items.join("\n");
+      const state = yield* store.read();
+
+      expect(output).toContain("active-root");
+      expect(output).toContain("active-child");
+      expect(output).not.toContain("other-root");
+      expect(output).not.toContain("other-child");
+      expect(output).not.toContain("stale");
+      expect(state.links.map((link) => String(link.branch))).toContain("stale");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sync refreshes stack blocks for pull requests created during repair", () => {
+    const seen: Array<string> = [];
+    let pulls = [pr(2, "active-child", "active-root")];
+    const layer = stackTestLayer({
+      current: "active-child",
+      refs: [
+        ref("dev", "dev-new"),
+        ref("active-root", "active-root"),
+        ref("active-child", "active-child"),
+      ],
+      pulls,
+      bases: bases(
+        ["active-root", "dev", "dev-old"],
+        ["active-child", "active-root", "active-root"],
+      ),
+      state: stackState([
+        stackLink({ branch: "active-root", parent: "dev", anchor: "dev-old", pr: null }),
+        stackLink({ branch: "active-child", parent: "active-root", anchor: "active-root", pr: 2 }),
+      ]),
+      service: {
+        pulls: () => Effect.succeed(pulls),
+        pull: (number) => {
+          const found = pulls.find((item) => item.number === number);
+          return found
+            ? Effect.succeed(metaFor(found))
+            : Effect.fail(new ExecError("gh", ["pr", "view", `${number}`], 1, "not found"));
+        },
+        create: (branch, base) =>
+          Effect.sync(() => {
+            const made = pr(3, branch, base);
+            pulls = [...pulls, made];
+            return made;
+          }),
+        body: (number) => Effect.sync(() => void seen.push(`body ${number}`)),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync({ branch: "active-child" });
+
+      expect(seen).toContain("body 3");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("sync branch argument rejects branches outside tracked stacks", () => {
     const layer = stackTestLayer({
       current: "dev",
@@ -2110,6 +2203,115 @@ describe("Stack", () => {
       expect(plan).toContain("would merge #4 (stack-a)");
       expect(plan).toContain("next root: stack-b");
     }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land repair only plans and applies descendants of the selected stack", () => {
+    const seen: Array<string> = [];
+    const layer = stackTestLayer({
+      current: "active-child",
+      refs: [
+        ref("dev", "dev-new"),
+        ref("active-root", "active-root"),
+        ref("active-child", "active-child"),
+        ref("other-root", "other-root"),
+        ref("other-child", "other-child"),
+      ],
+      pulls: [
+        pr(1, "active-root", "dev"),
+        pr(2, "active-child", "active-root"),
+        pr(3, "other-root", "dev"),
+        pr(4, "other-child", "other-root"),
+      ],
+      bases: bases(
+        ["active-root", "dev", "dev-new"],
+        ["active-child", "active-root", "active-root"],
+        ["other-root", "dev", "dev-old"],
+        ["other-child", "other-root", "other-old"],
+      ),
+      state: stackState([
+        stackLink({ branch: "active-root", parent: "dev", anchor: "dev-new", pr: 1 }),
+        stackLink({ branch: "active-child", parent: "active-root", anchor: "active-root", pr: 2 }),
+        stackLink({ branch: "other-root", parent: "dev", anchor: "dev-old", pr: 3 }),
+        stackLink({ branch: "other-child", parent: "other-root", anchor: "other-old", pr: 4 }),
+      ]),
+      service: {
+        replay: (branch) => Effect.sync(() => void seen.push(`rebase ${branch}`)),
+        push: (branch) => Effect.sync(() => void seen.push(`push ${branch}`)),
+        body: (number) => Effect.sync(() => void seen.push(`body ${number}`)),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      const output = (yield* stack.land("active-root")).join("\n");
+
+      expect(output).toContain("would merge #1 (active-root)");
+      expect(output).toContain("would rebase active-child onto dev");
+      expect(output).not.toContain("other-root");
+      expect(output).not.toContain("other-child");
+
+      yield* stack.land("active-root", { apply: true });
+      const state = yield* store.read();
+      expect(seen).toContain("rebase active-child");
+      expect(seen).toContain("push active-child");
+      expect(seen).toContain("body 2");
+      expect(seen.join("\n")).not.toContain("other-root");
+      expect(seen.join("\n")).not.toContain("other-child");
+      expect(seen).not.toContain("body 3");
+      expect(seen).not.toContain("body 4");
+      expect(state.links.map((link) => String(link.branch))).toContain("other-root");
+      expect(state.links.map((link) => String(link.branch))).toContain("other-child");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("land refreshes stack blocks for pull requests recreated during repair", () => {
+    const seen: Array<string> = [];
+    let pulls = [pr(1, "active-root", "dev")];
+    const layer = stackTestLayer({
+      current: "active-child",
+      refs: [
+        ref("dev", "dev-new"),
+        ref("active-root", "active-root"),
+        ref("active-child", "active-child"),
+      ],
+      pulls,
+      bases: bases(
+        ["active-root", "dev", "dev-new"],
+        ["active-child", "active-root", "active-root"],
+      ),
+      state: stackState([
+        stackLink({ branch: "active-root", parent: "dev", anchor: "dev-new", pr: 1 }),
+        stackLink({ branch: "active-child", parent: "active-root", anchor: "active-root", pr: 2 }),
+      ]),
+      service: {
+        pulls: () => Effect.succeed(pulls),
+        merge: (number) =>
+          Effect.sync(() => {
+            pulls = pulls.filter((item) => item.number !== number);
+          }),
+        pull: (number) => {
+          const found = pulls.find((item) => item.number === number);
+          return found
+            ? Effect.succeed(metaFor(found))
+            : Effect.fail(new ExecError("gh", ["pr", "view", `${number}`], 1, "not found"));
+        },
+        create: (branch, base) =>
+          Effect.sync(() => {
+            const made = pr(5, branch, base);
+            pulls = [...pulls, made];
+            return made;
+          }),
+        body: (number) => Effect.sync(() => void seen.push(`body ${number}`)),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.land("active-root", { apply: true });
+
+      expect(seen).toContain("body 5");
+    }).pipe(Effect.provide(layer));
   });
 
   it.effect("land infers the only stack root when current branch is off-stack", () => {
