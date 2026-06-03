@@ -9,19 +9,12 @@ dev
 ╰───────────╯
 ```
 
-Squash-safe stacked PRs / MRs for GitHub and GitLab repos that squash-merge and
-delete branches.
+Squash-safe stacked PR/MR repair for coding agents working in GitHub or GitLab
+repos that squash-merge and delete branches.
 
-`stack` preserves stack intent locally, infers obvious relationships from PR /
-MR target branches, and repairs descendants after parent changes or merges so
-open changes keep their comments, reviews, and context.
-
-Works against GitHub (via the `gh` CLI) and GitLab (via the `glab` CLI).
-Install and authenticate the matching CLI before running `stack`. The
-`github.com` and `gitlab.com` hosts are detected automatically from `origin`. For an
-enterprise host, configure the repository once with `git config stack.codeHost
-github` or `git config stack.codeHost gitlab`; use `STACK_CODE_HOST` as a
-temporary override.
+`stack` is agent-first. Humans can run it directly, but the happy path is: let
+the agent do normal code work with plain `git`, then use `stack` for stack
+inspection, repair, merge, and undo workflows.
 
 ## Install
 
@@ -29,32 +22,91 @@ temporary override.
 npm install -g @kitlangton/stack
 ```
 
-Install the agent skill too, so coding agents know the safe workflow:
+Install the agent skill too:
 
 ```bash
 npx skills add kitlangton/stack --skill stack
 ```
 
-## Example Workflow
-
-An agent splits one cleanup into two PRs. The second PR is based on the first, so
-GitHub knows the stack but Git will forget that relationship after squash merge.
+Install and authenticate the matching host CLI:
 
 ```bash
-gh pr create --base dev --head cleanup/schema-source
-gh pr create --base cleanup/schema-source --head cleanup/openapi-output
+gh auth login      # GitHub
+glab auth login    # GitLab
+```
 
+## Agent Happy Path
+
+1. Create stacked changes using normal git branches.
+2. Open the root PR/MR against trunk, for example `main` or `dev`.
+3. Open each child PR/MR against its parent branch.
+4. Preview the stack:
+
+```bash
 stack sync --dry-run
 ```
 
-The preview summarizes the resulting stack:
+5. Apply the safe maintenance workflow:
+
+```bash
+stack sync
+```
+
+6. Merge from the root when ready:
+
+```bash
+stack merge
+stack merge --apply
+```
+
+Use `stack merge --auto` when the code host should wait for merge requirements,
+then repair descendants automatically after the root lands.
+
+## What It Does
+
+`stack sync` is the common safe workflow:
+
+- Infers stack links from PR/MR target branches.
+- Records stack intent in `.git/stack/state.json`.
+- Repairs descendants after parent branches move or land.
+- Retargets PRs/MRs when needed.
+- Refreshes stack blocks in descriptions.
+- Saves `.git/stack/undo.json` before mutations.
+
+GitHub stack blocks use compact `#101` references. GitLab blocks use `!101`
+references plus titles because bare GitLab MR links only show titles on hover.
+
+If a repair fails, run:
+
+```bash
+stack history
+stack undo
+stack undo --apply
+```
+
+## GitHub And GitLab
+
+Provider selection is automatic for public hosts:
+
+- `github.com` uses `gh`.
+- `gitlab.com` uses `glab`.
+
+For enterprise hosts, configure the repo once:
+
+```bash
+git config stack.codeHost github  # or: gitlab
+```
+
+Use `STACK_CODE_HOST=github|gitlab` for a one-off override.
+
+## Example Output
 
 ```text
 Sync preview
 
-● dev
-└─ ● cleanup/schema-source #101
-   └─ ● cleanup/openapi-output #102
+● main
+└─ ● stack-a #101
+   └─ ● stack-b #102
 
 Would update PRs: #101, #102
 
@@ -62,82 +114,30 @@ Apply:
   stack sync
 ```
 
-Then sync it:
-
-```bash
-stack sync
-```
-
-`stack sync` records the inferred links, refreshes each PR body, and prints a
-concise summary:
-
 ```text
-Synced stack
-
-● dev
-└─ ● cleanup/schema-source #101
-   └─ ● cleanup/openapi-output #102
-
-Updated PRs: #101, #102
-
-Undo:
-  stack undo --apply
-```
-
-Each PR/MR gets a stack block in its description. GitHub blocks stay compact
-with native `#101` references. GitLab blocks use native `!101` references plus
-titles, because bare GitLab MR autolinks only show the title on hover.
-
-When the first PR is ready, the agent previews and merges the root:
-
-```bash
-stack merge
-stack merge --apply
-```
-
-Before merging, `stack` retargets child PRs away from the root branch. That keeps
-GitHub auto-delete from closing descendants, then `stack` rebases/pushes the
-remaining branches and refreshes stack blocks.
-
-```text
-→ retarget #102 (cleanup/openapi-output) to dev before merge
-→ merge #101 (cleanup/schema-source)
-→ rebase cleanup/openapi-output onto dev
-→ push cleanup/openapi-output
+→ retarget #102 (stack-b) to main before merge
+→ merge #101 (stack-a)
+→ rebase stack-b onto main
+→ push stack-b
 → update #102 stack block
 ```
 
-The child PR keeps its comments and reviews. Its stack block becomes history plus
-the current PR. On GitLab, the same block includes MR titles beside each `!N`.
-
-```md
-### [Stack](https://github.com/kitlangton/stack)
-
-1. #101
-2. **#102** 👈 current
-```
-
-## Commands
+## CLI Reference
 
 ```bash
-stack status             # local tracked stack plus available host details
-stack sync --dry-run     # preview target-branch inference and repairs
-stack sync               # record inferred links, repair, and refresh descriptions
+stack status             # inspect the relevant local stack
+stack guide              # print the agent/human happy path
+stack sync --dry-run     # preview inference, repairs, and description updates
+stack sync               # apply the safe maintenance workflow
 stack sync <branch>      # sync only the stack containing branch
-stack sync --keep-going  # process independent stacks and report failures at end
+stack sync --keep-going  # process independent stacks and report failures
+stack doctor             # inspect repo, host, metadata, and journal health
 stack merge              # dry-run the next root merge
 stack merge --apply      # merge root and repair descendants
 stack merge --auto       # wait for host requirements, then merge and repair
 stack merge --auto --through <branch-or-change>
-                          # auto-merge roots one at a time through a target
+                         # auto-merge roots through a bounded target
+stack history            # show the last saved mutation journal
+stack undo               # preview undo
+stack undo --apply       # restore branch tips, request targets, and metadata
 ```
-
-When a parent change branch changes, run `stack sync --dry-run` and then `stack sync`.
-From a stack branch, bare `stack sync` scopes to that stack; from off-stack it
-keeps the repo-wide behavior. Use `stack sync <branch>` to force one stack, or
-`stack sync --continue-on-failure` / `stack sync --keep-going` to process
-independent stacks and summarize any failures at the end.
-
-If a descendant replay conflicts, `stack` aborts the failed cherry-pick, restores
-your starting branch, keeps backups and an undo journal, and prints the branch to
-repair manually before rerunning `stack sync`.

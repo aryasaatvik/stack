@@ -5,7 +5,7 @@
 - `stack` is a small, local-first CLI for stacked PR/MR repair in squash-merge repos.
 - Use the latest Effect v4 beta / effect-smol APIs throughout this project.
 - Normal editing and commits stay plain git.
-- Stack commands are only for stack intent, sync, merge, and undo workflows.
+- Stack commands are only for stack inspection, intent, sync, merge, and undo workflows.
 
 ## Safety rules
 
@@ -20,6 +20,7 @@
 
 - `status` shows the relevant tracked stack, including open change titles when the code host is available.
 - `guide` prints the opinionated happy path for agents and humans.
+- `doctor` checks Git, code-host access, stack metadata, trunks, and undo journal health without mutating anything.
 - `track` records parentage for an existing branch only when change target branches do not already encode the stack.
 - `sync --dry-run [branch]` previews target-branch inference, stale metadata cleanup, and repairs without mutating branches, requests, or stack metadata using the tree summary output.
 - `sync [branch]` is the common safe workflow: remove stale local links, infer clear target-branch stack links, repair branches, retarget requests, refresh links, and show a concise tree summary. With a branch argument, sync only the stack containing that branch.
@@ -29,8 +30,8 @@
 - `merge` merges the oldest branch in a stack and immediately repairs descendants; when no branch is given, it infers the root from the current branch. It retargets immediate child requests before merge to preserve open work in auto-delete repos.
 - `merge --auto` retargets immediate child requests, enables code-host auto-merge, waits for merge, then repairs descendants.
 - `merge --auto --through <branch-or-change>` repeats root auto-merge and descendant repair until the target branch or request has landed.
-- `history` explains the most recent applied sync from the undo journal.
-- `undo` restores the last applied sync.
+- `history` explains the most recent applied mutation from the undo journal.
+- `undo` restores the last applied mutation.
 
 ## Implementation notes
 

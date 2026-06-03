@@ -23,6 +23,9 @@ stack.codeHost gitlab`; `STACK_CODE_HOST` is available as a temporary override.
 Keep ordinary editing and commits on plain `git`. Use `stack` only for stack
 intent, stack inspection, sync, merge, and undo workflows.
 
+Prefer letting agents run this workflow. Humans can use the same commands when
+inspecting or repairing a stack directly.
+
 ## Mental Model
 
 ```text
@@ -46,7 +49,7 @@ can restore the previous branch tips, change target branches, and stack metadata
 
 - `stack status`: show the relevant tracked stack graph and include open change details when the code-host CLI (`gh` or `glab`) is available.
 - `stack guide`: print the opinionated happy path for agents and humans.
-- `stack track <branch> --onto <parent>`: record stack intent for an existing branch.
+- `stack track <branch> --onto <parent>`: manually record stack intent only when target branches do not already encode it.
 - `stack sync --dry-run [branch]`: preview inferred target-branch stack links and repairs without changing branches or changes.
 - `stack sync [branch]`: infer clear target-branch stack links, repair descendants, retarget changes, and refresh stack blocks. With a branch argument, sync only the stack containing that branch.
 - `stack sync --continue-on-failure` / `stack sync --keep-going`: process independent stacks, summarize successes and failures, and exit nonzero if any stack failed.
@@ -222,6 +225,7 @@ stack blocks.
 
 ## Safety Rules
 
+- `stack sync --dry-run` never mutates branches, changes, or stack metadata.
 - `stack merge` is dry-run by default.
 - History-rewriting commands need `--apply`, except `stack sync` is explicitly
   the high-level mutating workflow and `stack merge --auto` waits for the code host.

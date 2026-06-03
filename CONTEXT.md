@@ -2,7 +2,7 @@
 
 ## Domain Terms
 
-- **Stack**: An ordered set of changes (GitHub PRs or GitLab MRs) where each branch is based on the previous branch, ending at a trunk branch such as `dev`.
+- **Stack**: An ordered set of changes (GitHub PRs or GitLab MRs) rooted at a trunk branch such as `dev`, where each child branch is based on its parent branch.
 - **Stack link**: Persisted metadata that records a branch, its parent branch, the merge-base anchor, and the associated change number (PR or MR IID).
 - **Stack block**: The generated markdown block in a change description that shows stack history and the current open path.
 - **Repair**: The workflow that rehomes stack descendants after a squash merge, parent branch deletion, or parent branch rewrite.
