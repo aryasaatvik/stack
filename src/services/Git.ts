@@ -7,8 +7,16 @@ import { BranchRef, branchRef, ExecError } from "../domain/model.ts";
 import * as Proc from "../platform/proc.ts";
 import { StackConfig } from "./Config.ts";
 
+export interface Worktree {
+  readonly path: string;
+  readonly head: string | null;
+  readonly branch: string | null;
+  readonly dirty: ReadonlyArray<string>;
+}
+
 export interface Interface {
   readonly dirty: () => Effect.Effect<ReadonlyArray<string>, ExecError>;
+  readonly worktrees: () => Effect.Effect<ReadonlyArray<Worktree>, ExecError>;
   readonly fetch: () => Effect.Effect<void, ExecError>;
   readonly remotes: () => Effect.Effect<
     ReadonlyArray<{ readonly name: string; readonly url: string }>,
@@ -51,13 +59,73 @@ export const live = Layer.effect(
     const cfg = yield* StackConfig;
     const proc = yield* Proc.Service;
 
-    const run = Effect.fn("Git.run")(function* (
+    const runAt = Effect.fn("Git.runAt")(function* (
+      cwd: string,
       tool: string,
       args: ReadonlyArray<string>,
       ok: ReadonlyArray<number> = [0],
     ) {
-      return yield* proc.exec(cfg.root, tool, args, ok);
+      return yield* proc.exec(cwd, tool, args, ok);
     });
+    const run = Effect.fn("Git.run")(
+      (tool: string, args: ReadonlyArray<string>, ok: ReadonlyArray<number> = [0]) =>
+        runAt(cfg.root, tool, args, ok),
+    );
+
+    const dirtyAt = Effect.fn("Git.dirtyAt")((path: string) =>
+      runAt(path, "git", ["status", "--short"]).pipe(
+        Effect.map((out) => out.split("\n").filter(Boolean)),
+      ),
+    );
+
+    const worktrees = Effect.fn("Git.worktrees")(function* () {
+      const out = yield* run("git", ["worktree", "list", "--porcelain", "-z"]);
+      const records: Array<{
+        path: string;
+        head: string | null;
+        branch: string | null;
+      }> = [];
+      let current: { path: string; head: string | null; branch: string | null } | null = null;
+      for (const field of out.split("\0").filter(Boolean)) {
+        if (field.startsWith("worktree ")) {
+          if (current) records.push(current);
+          current = { path: field.slice("worktree ".length), head: null, branch: null };
+          continue;
+        }
+        if (!current) continue;
+        if (field.startsWith("HEAD ")) current.head = field.slice("HEAD ".length);
+        else if (field.startsWith("branch refs/heads/"))
+          current.branch = field.slice("branch refs/heads/".length);
+        else if (field === "detached") current.branch = null;
+      }
+      if (current) records.push(current);
+
+      return yield* Effect.forEach(records, (record) =>
+        dirtyAt(record.path).pipe(
+          Effect.map(
+            (dirty): Worktree => ({
+              path: record.path,
+              head: record.head,
+              branch: record.branch,
+              dirty,
+            }),
+          ),
+        ),
+      );
+    });
+
+    const checkedOutDirtyError = (branch: string, worktree: Worktree) =>
+      new ExecError(
+        "git",
+        ["replay", branch],
+        1,
+        [
+          `${branch} is checked out at ${worktree.path} with local changes:`,
+          ...worktree.dirty.map((line) => `  ${line}`),
+          "",
+          `Commit, stash, or clean that worktree before repairing ${branch}.`,
+        ].join("\n"),
+      );
 
     const refs = Effect.fn("Git.refs")(function* () {
       const out = yield* run("git", [
@@ -75,9 +143,7 @@ export const live = Layer.effect(
         .map(([name, head]) => branchRef({ name, head }));
     });
 
-    const dirty = Effect.fn("Git.dirty")(() =>
-      run("git", ["status", "--short"]).pipe(Effect.map((out) => out.split("\n").filter(Boolean))),
-    );
+    const dirty = Effect.fn("Git.dirty")(() => dirtyAt(cfg.root));
 
     const current = Effect.fn("Git.current")(() => run("git", ["branch", "--show-current"]));
     const remote = Effect.fn("Git.remote")(() =>
@@ -145,27 +211,40 @@ export const live = Layer.effect(
       parent: string,
       commits: ReadonlyArray<string>,
     ) {
-      const current = yield* run("git", ["branch", "--show-current"]);
+      const owner = (yield* worktrees()).find((worktree) => worktree.branch === branch) ?? null;
+      if (owner && owner.dirty.length > 0) {
+        return yield* Effect.fail(checkedOutDirtyError(branch, owner));
+      }
+
+      const root = owner?.path ?? cfg.root;
+      const current = yield* runAt(root, "git", ["branch", "--show-current"]);
       const now = yield* Clock.currentTimeMillis;
       const temp = `stack/replay-${now}-${branch.replaceAll("/", "-")}`;
-      const abortCherryPick = run("git", ["cherry-pick", "--abort"], [0, 1, 128]).pipe(
+      const abortCherryPick = runAt(root, "git", ["cherry-pick", "--abort"], [0, 1, 128]).pipe(
         Effect.asVoid,
         Effect.orDie,
       );
-      const deleteTemp = run("git", ["branch", "-D", temp], [0, 1]).pipe(
+      const deleteTemp = runAt(root, "git", ["branch", "-D", temp], [0, 1]).pipe(
         Effect.asVoid,
         Effect.orDie,
       );
       const restoreCurrent = current
-        ? run("git", ["checkout", current]).pipe(Effect.asVoid, Effect.orDie)
+        ? runAt(root, "git", ["checkout", current]).pipe(Effect.asVoid, Effect.orDie)
         : Effect.void;
 
       yield* Effect.gen(function* () {
-        yield* run("git", ["checkout", "-B", temp, parent]).pipe(Effect.asVoid);
+        yield* runAt(root, "git", ["checkout", "-B", temp, parent]).pipe(Effect.asVoid);
         if (commits.length > 0) {
-          yield* run("git", ["cherry-pick", "--empty=drop", ...commits]).pipe(Effect.asVoid);
+          yield* runAt(root, "git", ["cherry-pick", "--empty=drop", ...commits]).pipe(
+            Effect.asVoid,
+          );
         }
-        yield* run("git", ["branch", "-f", branch, temp]).pipe(Effect.asVoid);
+        if (owner) {
+          yield* runAt(root, "git", ["checkout", branch]).pipe(Effect.asVoid);
+          yield* runAt(root, "git", ["reset", "--hard", temp]).pipe(Effect.asVoid);
+        } else {
+          yield* runAt(root, "git", ["branch", "-f", branch, temp]).pipe(Effect.asVoid);
+        }
       }).pipe(
         Effect.ensuring(
           abortCherryPick.pipe(Effect.ensuring(restoreCurrent.pipe(Effect.ensuring(deleteTemp)))),
@@ -175,9 +254,23 @@ export const live = Layer.effect(
     const backup = Effect.fn("Git.backup")((branch: string, name: string) =>
       run("git", ["branch", "-f", name, branch]).pipe(Effect.asVoid),
     );
-    const drop = Effect.fn("Git.drop")((branch: string) =>
-      run("git", ["branch", "-D", branch], [0, 1]).pipe(Effect.asVoid),
-    );
+    const drop = Effect.fn("Git.drop")(function* (branch: string) {
+      const owner =
+        (yield* worktrees()).find(
+          (worktree) => worktree.branch === branch && worktree.path !== cfg.root,
+        ) ?? null;
+      if (owner) {
+        return yield* Effect.fail(
+          new ExecError(
+            "git",
+            ["branch", "-D", branch],
+            1,
+            `${branch} is checked out at ${owner.path}; detach or remove that worktree before deleting the local branch.`,
+          ),
+        );
+      }
+      return yield* run("git", ["branch", "-D", branch], [0, 1]).pipe(Effect.asVoid);
+    });
     const restore = Effect.fn("Git.restore")((branch: string, name: string) =>
       run("git", ["branch", "-f", branch, name]).pipe(Effect.asVoid),
     );
@@ -193,6 +286,7 @@ export const live = Layer.effect(
       fetch,
       remotes,
       dirty,
+      worktrees,
       refs,
       current,
       remote,
@@ -221,6 +315,7 @@ export const test = (opts: {
     Service.of({
       fetch: () => Effect.void,
       dirty: () => Effect.succeed([]),
+      worktrees: () => Effect.succeed([]),
       refs: () => Effect.succeed(opts.refs ?? []),
       remotes: () => Effect.succeed([]),
       current: () => Effect.succeed(opts.current ?? ""),

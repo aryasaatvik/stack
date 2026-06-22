@@ -73,6 +73,7 @@ const gitAndCodeHost = (service: Partial<Git.Interface & CodeHost.Interface>) =>
     new ExecError(tool, args, 1, "unused test service");
   const defaults: Git.Interface & CodeHost.Interface = {
     dirty: () => Effect.succeed([]),
+    worktrees: () => Effect.succeed([]),
     fetch: () => Effect.void,
     remotes: () => Effect.succeed([]),
     refs: () => Effect.succeed([]),
@@ -1172,9 +1173,10 @@ describe("Git", () => {
       const error = yield* Effect.flip(git.replay("stack-b", "dev", ["b1"]));
 
       expect(error).toBeInstanceOf(ExecError);
-      const temp = calls[1]?.[3];
+      const temp = calls[2]?.[3];
       expect(temp).toBe("stack/replay-1700000000000-stack-b");
       expect(calls).toEqual([
+        ["git", "worktree", "list", "--porcelain", "-z"],
         ["git", "branch", "--show-current"],
         ["git", "checkout", "-B", temp, "dev"],
         ["git", "cherry-pick", "--empty=drop", "b1"],
@@ -1184,6 +1186,86 @@ describe("Git", () => {
       ]);
     }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
   });
+
+  it.effect(
+    "replay updates a checked-out branch from its owning clean worktree",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* tempDir();
+        const repo = join(root, "repo");
+        const sibling = join(root, "stack-b-worktree");
+
+        yield* mkdirp(repo);
+        yield* shell(repo, "git", ["init", "-b", "dev"]);
+        yield* shell(repo, "git", ["config", "user.email", "stack@example.com"]);
+        yield* shell(repo, "git", ["config", "user.name", "Stack Test"]);
+        yield* commitFile(repo, "base.txt", "base\n", "base");
+
+        yield* shell(repo, "git", ["checkout", "-b", "stack-b"]);
+        yield* commitFile(repo, "b.txt", "b1\n", "b1");
+        const stackBCommit = yield* shell(repo, "git", ["rev-parse", "stack-b"]);
+
+        yield* shell(repo, "git", ["checkout", "dev"]);
+        yield* commitFile(repo, "dev2.txt", "dev2\n", "dev2");
+        const devTip = yield* shell(repo, "git", ["rev-parse", "dev"]);
+        yield* shell(repo, "git", ["worktree", "add", sibling, "stack-b"]);
+
+        const cfgLayer = StackConfig.layer({ root: repo, trunks: ["dev"] }).pipe(
+          Layer.provide(NodeServices.layer),
+        );
+
+        yield* Effect.gen(function* () {
+          const git = yield* Git.Service;
+          yield* git.replay("stack-b", "dev", [stackBCommit]);
+        }).pipe(Effect.provide(Git.live.pipe(Layer.provide(cfgLayer))));
+
+        expect(yield* shell(sibling, "git", ["branch", "--show-current"])).toBe("stack-b");
+        expect(yield* shell(repo, "git", ["merge-base", "stack-b", "dev"])).toBe(devTip);
+        expect(yield* shell(sibling, "git", ["status", "--short"])).toBe("");
+      }).pipe(Effect.provide(platform)),
+    15_000,
+  );
+
+  it.effect(
+    "replay refuses a dirty owning worktree before moving the branch",
+    () =>
+      Effect.gen(function* () {
+        const root = yield* tempDir();
+        const repo = join(root, "repo");
+        const sibling = join(root, "stack-b-worktree");
+
+        yield* mkdirp(repo);
+        yield* shell(repo, "git", ["init", "-b", "dev"]);
+        yield* shell(repo, "git", ["config", "user.email", "stack@example.com"]);
+        yield* shell(repo, "git", ["config", "user.name", "Stack Test"]);
+        yield* commitFile(repo, "base.txt", "base\n", "base");
+
+        yield* shell(repo, "git", ["checkout", "-b", "stack-b"]);
+        yield* commitFile(repo, "b.txt", "b1\n", "b1");
+        const original = yield* shell(repo, "git", ["rev-parse", "stack-b"]);
+
+        yield* shell(repo, "git", ["checkout", "dev"]);
+        yield* commitFile(repo, "dev2.txt", "dev2\n", "dev2");
+        yield* shell(repo, "git", ["worktree", "add", sibling, "stack-b"]);
+        yield* put(join(sibling, "dirty.txt"), "dirty\n");
+
+        const cfgLayer = StackConfig.layer({ root: repo, trunks: ["dev"] }).pipe(
+          Layer.provide(NodeServices.layer),
+        );
+
+        const error = yield* Effect.gen(function* () {
+          const git = yield* Git.Service;
+          return yield* Effect.flip(git.replay("stack-b", "dev", [original]));
+        }).pipe(Effect.provide(Git.live.pipe(Layer.provide(cfgLayer))));
+
+        expect(error).toBeInstanceOf(ExecError);
+        expect(error.stderr).toContain("stack-b is checked out at ");
+        expect(error.stderr).toContain("stack-b-worktree");
+        expect(error.stderr).toContain("?? dirty.txt");
+        expect(yield* shell(repo, "git", ["rev-parse", "stack-b"])).toBe(original);
+      }).pipe(Effect.provide(platform)),
+    15_000,
+  );
 
   it.effect("push preserves origin tracking and supports fork remotes", () => {
     const calls: Array<ReadonlyArray<string>> = [];
@@ -3565,6 +3647,93 @@ describe("Stack", () => {
     }).pipe(Effect.provide(platform)),
   );
 
+  it.effect(
+    "sync repairs a branch from its owning clean worktree",
+    () =>
+      Effect.gen(function* () {
+        const scenario = yield* realStack({
+          current: "stack-b",
+          branches: [
+            {
+              name: "stack-b",
+              parent: "dev",
+              number: 2,
+              commits: [{ file: "b.txt", body: "b1\n", message: "b1" }],
+            },
+            {
+              name: "stack-c",
+              parent: "stack-b",
+              number: 3,
+              commits: [{ file: "c.txt", body: "c\n", message: "c" }],
+            },
+          ],
+        });
+        const sibling = join(scenario.repo, "..", "stack-c-worktree");
+
+        yield* scenario.git(["worktree", "add", sibling, "stack-c"]);
+        yield* commitFile(scenario.repo, "b2.txt", "b2\n", "b2");
+        yield* scenario.git(["push", "origin", "stack-b"]);
+
+        const items = yield* Effect.gen(function* () {
+          const stack = yield* Stack;
+          return yield* stack.sync({ apply: true });
+        }).pipe(Effect.provide(scenario.layer));
+
+        expect(items).toContain("   └─ ✓ stack-c #3 rebased onto stack-b");
+        expect(yield* shell(sibling, "git", ["branch", "--show-current"])).toBe("stack-c");
+        expect(yield* scenario.git(["merge-base", "stack-c", "stack-b"])).toBe(
+          yield* scenario.git(["rev-parse", "stack-b"]),
+        );
+        expect(yield* shell(sibling, "git", ["status", "--short"])).toBe("");
+      }).pipe(Effect.provide(platform)),
+    15_000,
+  );
+
+  it.effect(
+    "sync refuses a dirty checked-out branch before backing it up",
+    () =>
+      Effect.gen(function* () {
+        const scenario = yield* realStack({
+          current: "stack-b",
+          branches: [
+            {
+              name: "stack-b",
+              parent: "dev",
+              number: 2,
+              commits: [{ file: "b.txt", body: "b1\n", message: "b1" }],
+            },
+            {
+              name: "stack-c",
+              parent: "stack-b",
+              number: 3,
+              commits: [{ file: "c.txt", body: "c\n", message: "c" }],
+            },
+          ],
+        });
+        const sibling = join(scenario.repo, "..", "stack-c-worktree");
+
+        yield* scenario.git(["worktree", "add", sibling, "stack-c"]);
+        yield* put(join(sibling, "dirty.txt"), "dirty\n");
+        yield* commitFile(scenario.repo, "b2.txt", "b2\n", "b2");
+        yield* scenario.git(["push", "origin", "stack-b"]);
+
+        const error = yield* Effect.gen(function* () {
+          const stack = yield* Stack;
+          return yield* Effect.flip(stack.sync({ apply: true }));
+        }).pipe(Effect.provide(scenario.layer));
+
+        expect(error).toBeInstanceOf(StackOperationError);
+        expect(error.message).toContain("Cannot repair checked-out dirty worktree branches");
+        expect(error.message).toContain("stack-c -> ");
+        expect(error.message).toContain("stack-c-worktree");
+        expect(error.message).toContain("?? dirty.txt");
+        expect(
+          yield* scenario.git(["for-each-ref", "--format=%(refname:short)", "refs/heads/backup"]),
+        ).not.toContain("stack-c");
+      }).pipe(Effect.provide(platform)),
+    15_000,
+  );
+
   it.effect("sync rebases a deep stack when PR 2 is refactored", () =>
     Effect.gen(function* () {
       const scenario = yield* realStack({
@@ -3822,6 +3991,50 @@ describe("Stack", () => {
       expect(test.seen).toEqual([]);
     }).pipe(Effect.provide(test.layer));
   });
+
+  it.effect(
+    "land apply refuses a dirty descendant worktree before merging the root",
+    () =>
+      Effect.gen(function* () {
+        const scenario = yield* realStack({
+          current: "stack-a",
+          branches: [
+            {
+              name: "stack-a",
+              parent: "dev",
+              number: 1,
+              commits: [{ file: "a.txt", body: "a\n", message: "a" }],
+            },
+            {
+              name: "stack-b",
+              parent: "stack-a",
+              number: 2,
+              commits: [{ file: "b.txt", body: "b\n", message: "b" }],
+            },
+          ],
+        });
+        const sibling = join(scenario.repo, "..", "stack-b-worktree");
+
+        yield* scenario.git(["worktree", "add", sibling, "stack-b"]);
+        yield* put(join(sibling, "dirty.txt"), "dirty\n");
+
+        const error = yield* Effect.gen(function* () {
+          const stack = yield* Stack;
+          return yield* Effect.flip(stack.land("stack-a", { apply: true }));
+        }).pipe(Effect.provide(scenario.layer));
+
+        expect(error).toBeInstanceOf(StackOperationError);
+        expect(error.message).toContain("Cannot repair checked-out dirty worktree branches");
+        expect(error.message).toContain("stack-b -> ");
+        expect(error.message).toContain("stack-b-worktree");
+        expect(error.message).toContain("?? dirty.txt");
+        expect(scenario.log).not.toContain("merge 1");
+        expect(
+          yield* scenario.git(["for-each-ref", "--format=%(refname:short)", "refs/heads/backup"]),
+        ).not.toContain("stack-a");
+      }).pipe(Effect.provide(platform)),
+    15_000,
+  );
 
   it.effect(
     "land repairs descendants in a real git repository",

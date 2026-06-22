@@ -104,6 +104,31 @@ ${note}`;
         }),
       );
 
+      const ensureRepairableWorktrees = Effect.fn("Stack.ensureRepairableWorktrees")(function* (
+        branches: ReadonlyArray<string>,
+      ) {
+        const wanted = new Set(branches);
+        if (wanted.size === 0) return;
+        const dirty = (yield* git.worktrees()).filter(
+          (item) => item.branch && wanted.has(item.branch) && item.dirty.length > 0,
+        );
+        if (dirty.length === 0) return;
+        return yield* Effect.fail(
+          new StackOperationError(
+            [
+              "Cannot repair checked-out dirty worktree branches:",
+              "",
+              ...dirty.flatMap((item) => [
+                `  ${item.branch} -> ${item.path}`,
+                ...item.dirty.map((line) => `    ${line}`),
+              ]),
+              "",
+              "Commit, stash, or clean those worktrees, then rerun the command.",
+            ].join("\n"),
+          ),
+        );
+      });
+
       const trunk = (name: string) => cfg.trunks.some((item) => item === name);
       const step = (message: string) => progress.emit({ _tag: "Step", message });
       const wait = (message: string) => progress.emit({ _tag: "Wait", message });
@@ -886,6 +911,7 @@ ${note}`;
                 actions.push(...RepairPlan.rebaseBranch(rebase, mode));
 
                 if (apply) {
+                  yield* ensureRepairableWorktrees([String(link.branch)]);
                   const priorEntry = entries.find((item) => item.branch === link.branch) ?? null;
                   const entry = undoEntry({
                     branch: link.branch,
@@ -1665,6 +1691,23 @@ ${note}`;
                   })
                 : item;
             });
+            const repairPulls = yield* changesForLinks(
+              scopedState.links.filter((item) => item.branch !== target),
+              plannedPulls,
+            );
+            const plannedRepair = yield* repairStack(
+              scopedState,
+              refs.filter((item) => item.name !== target),
+              repairPulls,
+              { apply: false },
+            );
+            if (active) {
+              yield* ensureRepairableWorktrees(
+                plannedRepair.actions.flatMap((item) =>
+                  item._tag === "Rebase" ? [String(item.branch)] : [],
+                ),
+              );
+            }
             const actions = [
               ...(current === target ? [`${active ? "" : "would "}switch to ${root}`] : []),
               ...(hasLocalTarget ? [`${active ? "" : "would "}backup ${target} -> ${name}`] : []),
@@ -1744,18 +1787,8 @@ ${note}`;
               return yield* repairAfterMerge();
             }
 
-            const repairPulls = yield* changesForLinks(
-              scopedState.links.filter((item) => item.branch !== target),
-              plannedPulls,
-            );
-            const repair = yield* repairStack(
-              scopedState,
-              refs.filter((item) => item.name !== target),
-              repairPulls,
-              { apply: false },
-            );
             const tail = next ? `next root: ${next}` : "next root: none";
-            return [...actions, ...repair.lines, tail];
+            return [...actions, ...plannedRepair.lines, tail];
           }),
       );
 
