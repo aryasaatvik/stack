@@ -19,13 +19,13 @@ inspection, repair, merge, and undo workflows.
 ## Install
 
 ```bash
-npm install -g @kitlangton/stack
+npm install -g @aryasaatvik/stack
 ```
 
 Install the agent skill too:
 
 ```bash
-npx skills add kitlangton/stack --skill stack
+npx skills add aryasaatvik/stack --skill stack
 ```
 
 Install and authenticate the matching host CLI:

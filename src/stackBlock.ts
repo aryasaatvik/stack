@@ -2,7 +2,7 @@ import { PullMeta, PullRef } from "./domain/model.ts";
 
 const start = "<!-- stack:links:start -->";
 const end = "<!-- stack:links:end -->";
-const linkedHeading = "### [Stack](https://github.com/kitlangton/stack)";
+const linkedHeading = "### [Stack](https://github.com/aryasaatvik/stack)";
 const plainHeading = "### Stack";
 
 const inlineTitle = (value: string | null) => {
