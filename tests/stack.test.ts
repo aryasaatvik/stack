@@ -3183,7 +3183,7 @@ describe("Stack", () => {
       expect(body.match(/<!-- stack:links:start -->/g)).toHaveLength(1);
       expect(body.match(/<!-- stack:links:end -->/g)).toHaveLength(1);
       expect(body).not.toContain("old stack block");
-      expect(body).toContain("### [Stack](https://github.com/kitlangton/stack)");
+      expect(body).toContain("### [Stack](https://github.com/aryasaatvik/stack)");
     }).pipe(Effect.provide(test.layer));
   });
 
@@ -5224,7 +5224,7 @@ describe("StackBlock", () => {
       branch: "feat/b",
       previous: "",
     });
-    expect(block).toContain("### [Stack](https://github.com/kitlangton/stack)");
+    expect(block).toContain("### [Stack](https://github.com/aryasaatvik/stack)");
   });
 
   it("renders a plain heading without the attribution link when blockLink is false", () => {
@@ -5277,7 +5277,7 @@ describe("StackBlock", () => {
     const previous = `body before
 
 <!-- stack:links:start -->
-### [Stack](https://github.com/kitlangton/stack)
+### [Stack](https://github.com/aryasaatvik/stack)
 
 1. !1
 2. !2 - Already titled
@@ -5306,7 +5306,7 @@ describe("StackBlock", () => {
     const previous = `body before
 
 <!-- stack:links:start -->
-### [Stack](https://github.com/kitlangton/stack)
+### [Stack](https://github.com/aryasaatvik/stack)
 
 1. !1
 2. !2
@@ -5327,7 +5327,7 @@ describe("StackBlock", () => {
     const previous = `body before
 
 <!-- stack:links:start -->
-### [Stack](https://github.com/kitlangton/stack)
+### [Stack](https://github.com/aryasaatvik/stack)
 
 1. #1
 2. #2
