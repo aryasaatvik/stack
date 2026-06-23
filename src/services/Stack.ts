@@ -1773,15 +1773,10 @@ ${note}`;
           for (const target of chain) {
             if (items.length > 0) items.push("");
             items.push(...(yield* landOne(target, { auto: true })));
-            if (target === stop) {
-              items.push(`merged through: ${stop}`);
-              return items;
-            }
           }
 
-          return yield* Effect.fail(
-            new StackOperationError(`${through} is not in the current stack from ${chain[0]}`),
-          );
+          items.push(`merged through: ${stop}`);
+          return items;
         });
       });
 

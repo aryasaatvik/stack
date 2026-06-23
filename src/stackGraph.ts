@@ -176,14 +176,14 @@ export const make = (input: StackGraphInput): StackGraph => {
     return chain.reverse();
   };
 
-  const children = new Map<string, Array<string>>();
+  const explicitChildren = new Map<string, Array<string>>();
   for (const link of input.state.links) {
     const parent = String(link.parent);
-    const list = children.get(parent) ?? [];
+    const list = explicitChildren.get(parent) ?? [];
     list.push(String(link.branch));
-    children.set(parent, list);
+    explicitChildren.set(parent, list);
   }
-  for (const list of children.values()) list.sort((a, b) => a.localeCompare(b));
+  for (const list of explicitChildren.values()) list.sort((a, b) => a.localeCompare(b));
 
   const displayChainFor = (branch: string) => {
     const chain = Array.from(pathTo(branch));
@@ -191,7 +191,7 @@ export const make = (input: StackGraphInput): StackGraph => {
     let name = branch;
 
     for (;;) {
-      const kids = children.get(name) ?? [];
+      const kids = explicitChildren.get(name) ?? [];
       if (kids.length !== 1) break;
       const child = kids[0]!;
       if (seen.has(child)) break;
