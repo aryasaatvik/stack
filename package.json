@@ -1,6 +1,6 @@
 {
-  "name": "@kitlangton/stack",
-  "version": "0.2.0",
+  "name": "@aryasaatvik/stack",
+  "version": "0.2.0-aryasaatvik.0",
   "description": "Squash-safe stacked PR/MR repair CLI for GitHub and GitLab",
   "keywords": [
     "cli",
@@ -12,14 +12,14 @@
     "pull-requests",
     "stacked-prs"
   ],
-  "homepage": "https://github.com/kitlangton/stack#readme",
+  "homepage": "https://github.com/aryasaatvik/stack#readme",
   "bugs": {
-    "url": "https://github.com/kitlangton/stack/issues"
+    "url": "https://github.com/aryasaatvik/stack/issues"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kitlangton/stack.git"
+    "url": "git+https://github.com/aryasaatvik/stack.git"
   },
   "bin": {
     "stack": "dist/cli.js"
