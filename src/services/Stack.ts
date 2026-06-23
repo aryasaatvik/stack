@@ -823,6 +823,45 @@ ${note}`;
               }
             };
 
+            const plannedRepairBranches = Effect.fn("Stack.repairStack.plannedRepairBranches")(
+              function* () {
+                const branches = new Set<string>();
+                const plannedMoved = new Set<string>();
+                const plannedTips = new Map<string, string | null>();
+
+                for (const link of [...state.links].sort(
+                  (a, b) => graph.rank(String(a.branch)) - graph.rank(String(b.branch)),
+                )) {
+                  if (!live.has(String(link.branch))) continue;
+
+                  const parent = resolve(String(link.parent));
+                  if (!parent) continue;
+
+                  const onto = trunk(parent) ? `origin/${parent}` : parent;
+                  if (!plannedTips.has(onto)) {
+                    const tip = yield* git.head(onto);
+                    plannedTips.set(onto, Option.isSome(tip) ? tip.value : null);
+                  }
+                  const want = plannedTips.get(onto) ?? heads.get(parent) ?? null;
+                  const have = yield* git.base(link.branch, onto);
+                  const drift =
+                    replayAnchors.has(String(link.branch)) ||
+                    parent !== link.parent ||
+                    plannedMoved.has(parent) ||
+                    (want && (Option.isNone(have) || have.value !== want));
+
+                  if (drift) {
+                    branches.add(String(link.branch));
+                    plannedMoved.add(String(link.branch));
+                  }
+                }
+
+                return branches;
+              },
+            );
+
+            if (apply) yield* ensureRepairableWorktrees([...(yield* plannedRepairBranches())]);
+
             for (const link of [...state.links].sort(
               (a, b) => graph.rank(String(a.branch)) - graph.rank(String(b.branch)),
             )) {
@@ -911,7 +950,6 @@ ${note}`;
                 actions.push(...RepairPlan.rebaseBranch(rebase, mode));
 
                 if (apply) {
-                  yield* ensureRepairableWorktrees([String(link.branch)]);
                   const priorEntry = entries.find((item) => item.branch === link.branch) ?? null;
                   const entry = undoEntry({
                     branch: link.branch,

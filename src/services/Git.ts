@@ -84,12 +84,23 @@ export const live = Layer.effect(
         path: string;
         head: string | null;
         branch: string | null;
+        prunable: boolean;
       }> = [];
-      let current: { path: string; head: string | null; branch: string | null } | null = null;
+      let current: {
+        path: string;
+        head: string | null;
+        branch: string | null;
+        prunable: boolean;
+      } | null = null;
       for (const field of out.split("\0").filter(Boolean)) {
         if (field.startsWith("worktree ")) {
           if (current) records.push(current);
-          current = { path: field.slice("worktree ".length), head: null, branch: null };
+          current = {
+            path: field.slice("worktree ".length),
+            head: null,
+            branch: null,
+            prunable: false,
+          };
           continue;
         }
         if (!current) continue;
@@ -97,20 +108,24 @@ export const live = Layer.effect(
         else if (field.startsWith("branch refs/heads/"))
           current.branch = field.slice("branch refs/heads/".length);
         else if (field === "detached") current.branch = null;
+        else if (field === "prunable" || field.startsWith("prunable ")) current.prunable = true;
       }
       if (current) records.push(current);
 
-      return yield* Effect.forEach(records, (record) =>
-        dirtyAt(record.path).pipe(
-          Effect.map(
-            (dirty): Worktree => ({
-              path: record.path,
-              head: record.head,
-              branch: record.branch,
-              dirty,
-            }),
+      return yield* Effect.forEach(
+        records.filter((record) => !record.prunable),
+        (record) =>
+          dirtyAt(record.path).pipe(
+            Effect.map(
+              (dirty): Worktree => ({
+                path: record.path,
+                head: record.head,
+                branch: record.branch,
+                dirty,
+              }),
+            ),
           ),
-        ),
+        { concurrency: "unbounded" },
       );
     });
 

@@ -1267,6 +1267,50 @@ describe("Git", () => {
     15_000,
   );
 
+  it.effect("worktrees ignores prunable records before dirty checks", () => {
+    const calls: Array<{ cwd: string; args: ReadonlyArray<string> }> = [];
+    const proc = Layer.succeed(
+      Proc.Service,
+      Proc.Service.of({
+        exec: (cwd, tool, args) =>
+          Effect.gen(function* () {
+            calls.push({ cwd, args: [tool, ...args] });
+            if (args[0] === "worktree") {
+              return [
+                "worktree /tmp/stack",
+                "HEAD a",
+                "branch refs/heads/dev",
+                "worktree /tmp/missing-stack-b",
+                "HEAD b",
+                "branch refs/heads/stack-b",
+                "prunable gitdir file points to non-existent location",
+                "",
+              ].join("\0");
+            }
+            if (cwd === "/tmp/missing-stack-b") {
+              return yield* Effect.fail(new ExecError(tool, args, 1, "ENOENT"));
+            }
+            return "";
+          }),
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const git = yield* Git.Service;
+      const worktrees = yield* git.worktrees();
+
+      expect(worktrees).toEqual([
+        {
+          path: "/tmp/stack",
+          head: "a",
+          branch: "dev",
+          dirty: [],
+        },
+      ]);
+      expect(calls.map((call) => call.cwd)).not.toContain("/tmp/missing-stack-b");
+    }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
+  });
+
   it.effect("push preserves origin tracking and supports fork remotes", () => {
     const calls: Array<ReadonlyArray<string>> = [];
     const proc = Layer.succeed(
@@ -3730,6 +3774,51 @@ describe("Stack", () => {
         expect(
           yield* scenario.git(["for-each-ref", "--format=%(refname:short)", "refs/heads/backup"]),
         ).not.toContain("stack-c");
+      }).pipe(Effect.provide(platform)),
+    15_000,
+  );
+
+  it.effect(
+    "sync refuses a dirty descendant worktree before backing up earlier repairs",
+    () =>
+      Effect.gen(function* () {
+        const scenario = yield* realStack({
+          current: "dev",
+          branches: [
+            {
+              name: "stack-b",
+              parent: "dev",
+              number: 2,
+              commits: [{ file: "b.txt", body: "b1\n", message: "b1" }],
+            },
+            {
+              name: "stack-c",
+              parent: "stack-b",
+              number: 3,
+              commits: [{ file: "c.txt", body: "c\n", message: "c" }],
+            },
+          ],
+        });
+        const sibling = join(scenario.repo, "..", "stack-c-worktree");
+
+        yield* scenario.git(["worktree", "add", sibling, "stack-c"]);
+        yield* scenario.git(["checkout", "dev"]);
+        yield* commitFile(scenario.repo, "dev2.txt", "dev2\n", "dev2");
+        yield* scenario.git(["push", "origin", "dev"]);
+        yield* put(join(sibling, "dirty.txt"), "dirty\n");
+
+        const error = yield* Effect.gen(function* () {
+          const stack = yield* Stack;
+          return yield* Effect.flip(stack.sync({ apply: true }));
+        }).pipe(Effect.provide(scenario.layer));
+
+        expect(error).toBeInstanceOf(StackOperationError);
+        expect(error.message).toContain("Cannot repair checked-out dirty worktree branches");
+        expect(error.message).toContain("stack-c -> ");
+        expect(error.message).toContain("stack-c-worktree");
+        expect(
+          yield* scenario.git(["for-each-ref", "--format=%(refname:short)", "refs/heads/backup"]),
+        ).not.toContain("stack-b");
       }).pipe(Effect.provide(platform)),
     15_000,
   );
