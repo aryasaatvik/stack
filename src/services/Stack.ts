@@ -104,6 +104,31 @@ ${note}`;
         }),
       );
 
+      const ensureRepairableWorktrees = Effect.fn("Stack.ensureRepairableWorktrees")(function* (
+        branches: ReadonlyArray<string>,
+      ) {
+        const wanted = new Set(branches);
+        if (wanted.size === 0) return;
+        const dirty = (yield* git.worktrees()).filter(
+          (item) => item.branch && wanted.has(item.branch) && item.dirty.length > 0,
+        );
+        if (dirty.length === 0) return;
+        return yield* Effect.fail(
+          new StackOperationError(
+            [
+              "Cannot repair checked-out dirty worktree branches:",
+              "",
+              ...dirty.flatMap((item) => [
+                `  ${item.branch} -> ${item.path}`,
+                ...item.dirty.map((line) => `    ${line}`),
+              ]),
+              "",
+              "Commit, stash, or clean those worktrees, then rerun the command.",
+            ].join("\n"),
+          ),
+        );
+      });
+
       const trunk = (name: string) => cfg.trunks.some((item) => item === name);
       const step = (message: string) => progress.emit({ _tag: "Step", message });
       const wait = (message: string) => progress.emit({ _tag: "Wait", message });
@@ -797,6 +822,45 @@ ${note}`;
                 parent = String(link.parent);
               }
             };
+
+            const plannedRepairBranches = Effect.fn("Stack.repairStack.plannedRepairBranches")(
+              function* () {
+                const branches = new Set<string>();
+                const plannedMoved = new Set<string>();
+                const plannedTips = new Map<string, string | null>();
+
+                for (const link of [...state.links].sort(
+                  (a, b) => graph.rank(String(a.branch)) - graph.rank(String(b.branch)),
+                )) {
+                  if (!live.has(String(link.branch))) continue;
+
+                  const parent = resolve(String(link.parent));
+                  if (!parent) continue;
+
+                  const onto = trunk(parent) ? `origin/${parent}` : parent;
+                  if (!plannedTips.has(onto)) {
+                    const tip = yield* git.head(onto);
+                    plannedTips.set(onto, Option.isSome(tip) ? tip.value : null);
+                  }
+                  const want = plannedTips.get(onto) ?? heads.get(parent) ?? null;
+                  const have = yield* git.base(link.branch, onto);
+                  const drift =
+                    replayAnchors.has(String(link.branch)) ||
+                    parent !== link.parent ||
+                    plannedMoved.has(parent) ||
+                    (want && (Option.isNone(have) || have.value !== want));
+
+                  if (drift) {
+                    branches.add(String(link.branch));
+                    plannedMoved.add(String(link.branch));
+                  }
+                }
+
+                return branches;
+              },
+            );
+
+            if (apply) yield* ensureRepairableWorktrees([...(yield* plannedRepairBranches())]);
 
             for (const link of [...state.links].sort(
               (a, b) => graph.rank(String(a.branch)) - graph.rank(String(b.branch)),
@@ -1664,6 +1728,23 @@ ${note}`;
                   })
                 : item;
             });
+            const repairPulls = yield* changesForLinks(
+              scopedState.links.filter((item) => item.branch !== target),
+              plannedPulls,
+            );
+            const plannedRepair = yield* repairStack(
+              scopedState,
+              refs.filter((item) => item.name !== target),
+              repairPulls,
+              { apply: false },
+            );
+            if (active) {
+              yield* ensureRepairableWorktrees(
+                plannedRepair.actions.flatMap((item) =>
+                  item._tag === "Rebase" ? [String(item.branch)] : [],
+                ),
+              );
+            }
             const actions = [
               ...(current === target ? [`${active ? "" : "would "}switch to ${root}`] : []),
               ...(hasLocalTarget ? [`${active ? "" : "would "}backup ${target} -> ${name}`] : []),
@@ -1743,18 +1824,8 @@ ${note}`;
               return yield* repairAfterMerge();
             }
 
-            const repairPulls = yield* changesForLinks(
-              scopedState.links.filter((item) => item.branch !== target),
-              plannedPulls,
-            );
-            const repair = yield* repairStack(
-              scopedState,
-              refs.filter((item) => item.name !== target),
-              repairPulls,
-              { apply: false },
-            );
             const tail = next ? `next root: ${next}` : "next root: none";
-            return [...actions, ...repair.lines, tail];
+            return [...actions, ...plannedRepair.lines, tail];
           }),
       );
 
