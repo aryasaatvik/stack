@@ -1634,6 +1634,11 @@ ${note}`;
             const stamp = yield* timestamp();
             const name = `backup/landed-${stamp}-${target}`;
             const hasLocalTarget = refs.some((item) => item.name === target);
+            const targetOwner = hasLocalTarget
+              ? ((yield* git.worktrees()).find(
+                  (worktree) => worktree.branch === target && worktree.path !== cfg.root,
+                ) ?? null)
+              : null;
             const next = scopedState.links.find((item) => item.parent === target)?.branch ?? null;
             const landed = new Set([reference(Number(pr.number)), String(target)]);
             const preRetargets = (yield* Effect.forEach(
@@ -1739,11 +1744,12 @@ ${note}`;
               { apply: false },
             );
             if (active) {
-              yield* ensureRepairableWorktrees(
-                plannedRepair.actions.flatMap((item) =>
+              yield* ensureRepairableWorktrees([
+                ...(targetOwner ? [target] : []),
+                ...plannedRepair.actions.flatMap((item) =>
                   item._tag === "Rebase" ? [String(item.branch)] : [],
                 ),
-              );
+              ]);
             }
             const actions = [
               ...(current === target ? [`${active ? "" : "would "}switch to ${root}`] : []),
@@ -1818,6 +1824,10 @@ ${note}`;
               }
               yield* beginPostMergeRepair();
               if (hasLocalTarget) {
+                if (targetOwner) {
+                  yield* step(`release ${target} worktree`);
+                  yield* git.release(target);
+                }
                 yield* step(`drop local ${target}`);
                 yield* git.drop(target);
               }
