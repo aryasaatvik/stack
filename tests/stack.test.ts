@@ -4343,6 +4343,31 @@ describe("Stack", () => {
     }).pipe(Effect.provide(test.layer));
   });
 
+  it.effect("land auto refuses a dirty target worktree before merging the root", () => {
+    const test = makeLand([], "dev", null, {
+      worktrees: () =>
+        Effect.succeed([
+          {
+            path: "/tmp/stack-a-worktree",
+            head: "stack-a-1",
+            branch: "stack-a",
+            dirty: ["?? dirty.txt"],
+          },
+        ]),
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const error = yield* Effect.flip(stack.land("stack-a", { auto: true }));
+
+      expect(error).toBeInstanceOf(StackOperationError);
+      expect(error.message).toContain("Cannot repair checked-out dirty worktree branches");
+      expect(error.message).toContain("stack-a -> /tmp/stack-a-worktree");
+      expect(error.message).toContain("?? dirty.txt");
+      expect(test.seen).toEqual([]);
+    }).pipe(Effect.provide(test.layer));
+  });
+
   it.effect(
     "land apply refuses a dirty descendant worktree before merging the root",
     () =>
