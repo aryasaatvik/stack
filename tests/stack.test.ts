@@ -1299,6 +1299,27 @@ describe("StackGraph", () => {
     });
     expect(graph.wouldCreateCycle("stack-a", "stack-b")).toBe(true);
   });
+
+  it("starts display trees at the highest live ancestor", () => {
+    const state = stackState([
+      stackLink({ branch: "stack-a", parent: "dev", anchor: "dev", pr: 1 }),
+      stackLink({ branch: "stack-b", parent: "stack-a", anchor: "a", pr: 2 }),
+      stackLink({ branch: "stack-c", parent: "stack-b", anchor: "b", pr: 3 }),
+    ]);
+    const graph = StackGraph.make({
+      state,
+      refs: [ref("dev"), ref("stack-a", "a"), ref("stack-b", "b"), ref("stack-c", "c")],
+      pulls: [pr(2, "stack-b", "stack-a"), pr(3, "stack-c", "stack-b")],
+      trunks: ["dev"],
+      current: "stack-c",
+    });
+
+    expect(graph.rootOf("stack-c")).toBe("stack-a");
+    expect(graph.displayTreeFor("stack-c")).toEqual({
+      branch: "stack-b",
+      children: [{ branch: "stack-c", children: [] }],
+    });
+  });
 });
 
 describe("Git", () => {
@@ -3208,8 +3229,8 @@ describe("Stack", () => {
       expect(body).not.toContain("Earlier in Stack");
       expect(body).not.toContain("Current / Remaining");
       expect(body).not.toContain("\nMerged\n");
-      expectLine(body, "  - #5 `stack-b`");
-      expectLine(body, "    - **#3** 👈 current `stack-c`");
+      expectLine(body, "- #5 `stack-b`");
+      expectLine(body, "  - **#3** 👈 current `stack-c`");
     }).pipe(Effect.provide(test.layer));
   });
 
@@ -3272,8 +3293,8 @@ describe("Stack", () => {
       yield* stack.links(true);
 
       const body = test.bodies.get(3) ?? "";
-      expectLine(body, "  - !5 - fix+refactor(vcs): old title `stack-b`");
-      expectLine(body, "    - **!3 - stack-c** 👈 current `stack-c`");
+      expectLine(body, "- !5 - fix+refactor(vcs): old title `stack-b`");
+      expectLine(body, "  - **!3 - stack-c** 👈 current `stack-c`");
       expect(body).not.toContain("#3");
     }).pipe(Effect.provide(test.layer));
   });
