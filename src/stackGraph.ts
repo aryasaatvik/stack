@@ -211,7 +211,7 @@ export const make = (input: StackGraphInput): StackGraph => {
   };
 
   const displayTreeFor = (branch: string): DisplayTree => {
-    const root = rootOf(branch);
+    const root = pathTo(branch).find((name) => liveBranches.has(name)) ?? branch;
     const build = (name: string, seen = new Set<string>()): DisplayTree => {
       if (seen.has(name)) return { branch: name, children: [] };
       const nextSeen = new Set(seen);
