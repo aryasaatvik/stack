@@ -50,10 +50,12 @@ const completedLines = (
       const pr = line.match(/[#!]\d+/)?.[0] ?? null;
       const key = branch ?? pr;
       if (!key || liveKeys.has(key)) return [];
-      if (completedKeys.size > 0 && !numbered && !checked && !completedKeys.has(key)) {
+      const checkbox = line.startsWith("- [");
+      const completedHistory = checked || numbered || (!checkbox && branch === null);
+      if (!completedHistory && !completedKeys.has(key)) {
         return [];
       }
-      if (completedKeys.size === 0 && line.startsWith("- [") && !checked) {
+      if (checkbox && !checked && !completedKeys.has(key)) {
         return [];
       }
       const cleaned = line
