@@ -87,19 +87,21 @@ work. Repeat after any parent branch changes or a squash merge lands.
 `stack sync --apply` and `stack merge --apply/--auto` refresh a deterministic
 block in each open change description:
 
-```md
+```text
 <!-- stack:links:start -->
 
 ### [Stack](https://github.com/kitlangton/stack)
 
-1. #101
-2. #102
-3. **#103** 👈 current
+- #101 `stack-a`
+  - #102 `stack-b`
+    - **#103** 👈 current `stack-c`
 <!-- stack:links:end -->
 ```
 
-Earlier entries are landed history. The current change is bold with `👈 current`.
-GitHub uses `#123`; GitLab uses `!123 - Title`.
+Earlier top-level entries are landed history. Open changes are rendered as a
+nested list where indentation shows lineage and siblings share the same parent.
+The current change is bold with `👈 current`. GitHub uses `#123`; GitLab uses
+`!123 - Title`.
 
 ## Safety Rules
 

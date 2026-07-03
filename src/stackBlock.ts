@@ -1,4 +1,5 @@
 import { PullMeta, PullRef } from "./domain/model.ts";
+import type { DisplayTree } from "./stackGraph.ts";
 
 const start = "<!-- stack:links:start -->";
 const end = "<!-- stack:links:end -->";
@@ -41,7 +42,7 @@ const completedLines = (
   return prior
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => line.startsWith("- [") || /^\d+\.\s+/.test(line))
+    .filter((line) => line.startsWith("- ") || /^\d+\.\s+/.test(line))
     .flatMap((line) => {
       const checked = line.startsWith("- [x]");
       const numbered = /^\d+\.\s+/.test(line);
@@ -49,23 +50,32 @@ const completedLines = (
       const pr = line.match(/[#!]\d+/)?.[0] ?? null;
       const key = branch ?? pr;
       if (!key || liveKeys.has(key)) return [];
-      if (completedKeys.size > 0 && !numbered && !checked && !completedKeys.has(key)) {
+      const checkbox = line.startsWith("- [");
+      const completedHistory = checked || numbered || (!checkbox && branch === null);
+      if (!completedHistory && !completedKeys.has(key)) {
         return [];
       }
-      if (completedKeys.size === 0 && line.startsWith("- [") && !checked) {
+      if (checkbox && !checked && !completedKeys.has(key)) {
         return [];
       }
       const cleaned = line
         .replace(/^- \[[ x]\]\s+/, "")
+        .replace(/^-\s+/, "")
         .replace(/^\d+\.\s+/, "")
         .replaceAll("**", "")
         .replace(/([#!]\d+)\s+`[^`]+`/g, "$1")
+        .replace(/\s+`[^`]+`/g, "")
         .replace(/\s*(?:←|👈) current$/, "");
       const number = Number(pr?.slice(1));
       const title = Number.isInteger(number) ? completedTitles.get(number) : undefined;
       return [/[#!]\d+\s+-\s+/.test(cleaned) ? cleaned : `${cleaned}${inlineTitle(title ?? null)}`];
     });
 };
+
+const walkTree = (tree: DisplayTree): ReadonlyArray<string> => [
+  tree.branch,
+  ...tree.children.flatMap((child) => walkTree(child)),
+];
 
 export const references = (body: string) => {
   const prior = body.match(new RegExp(`${start}([\\s\\S]*?)${end}`))?.[1];
@@ -78,7 +88,7 @@ export const references = (body: string) => {
 export const render = (opts: {
   readonly pulls: ReadonlyArray<PullRef>;
   readonly metas: ReadonlyMap<string, PullMeta>;
-  readonly chain: ReadonlyArray<string>;
+  readonly tree: DisplayTree | null;
   readonly completed?: ReadonlySet<string>;
   readonly branch: string;
   readonly previous: string;
@@ -91,17 +101,25 @@ export const render = (opts: {
   const showTitles = opts.showTitles ?? false;
   const heading = (opts.blockLink ?? true) ? linkedHeading : plainHeading;
   const prs = new Map(opts.pulls.map((pull) => [String(pull.head), pull]));
-  const chain = opts.chain;
+  const treeBranches = opts.tree ? walkTree(opts.tree) : [];
   const liveKeys = new Set(
-    chain.flatMap((branch) => {
+    [...opts.pulls.map((pull) => String(pull.head)), ...treeBranches].flatMap((branch) => {
       const pr = prs.get(branch) ?? opts.metas.get(branch) ?? null;
       return pr ? [branch, `#${pr.number}`, `!${pr.number}`] : [branch];
     }),
   );
   const line = (name: string) => {
     const head = format(name, prs, opts.metas, reference, showTitles);
-    if (name === opts.branch) return `**${head}** 👈 current`;
-    return head;
+    const label = name === opts.branch ? `**${head}** 👈 current` : head;
+    if (head === `\`${name}\``) return label;
+    return `${label} \`${name}\``;
+  };
+  const treeLines = (tree: DisplayTree, depth = 0): ReadonlyArray<string> => {
+    const prefix = `${"  ".repeat(depth)}- `;
+    return [
+      prefix + line(tree.branch),
+      ...tree.children.flatMap((child) => treeLines(child, depth + 1)),
+    ];
   };
   const items = [
     ...completedLines(
@@ -110,12 +128,18 @@ export const render = (opts: {
       opts.completed ?? new Set(),
       showTitles ? (opts.completedTitles ?? new Map()) : new Map(),
     ),
-    ...chain.map(line),
+    ...(opts.tree ? treeLines(opts.tree) : []),
   ];
 
-  return [start, heading, "", ...items.map((item, index) => `${index + 1}. ${item}`), end].join(
-    "\n",
-  );
+  return [
+    start,
+    heading,
+    "",
+    ...items.map((entry) =>
+      entry.startsWith("- ") || entry.startsWith("  ") ? entry : `- ${entry}`,
+    ),
+    end,
+  ].join("\n");
 };
 
 export const splice = (body: string, next: string) => {

@@ -26,11 +26,17 @@ export interface StatusTree {
   readonly children: ReadonlyMap<string, ReadonlyArray<string>>;
 }
 
+export interface DisplayTree {
+  readonly branch: string;
+  readonly children: ReadonlyArray<DisplayTree>;
+}
+
 export interface StackGraph {
   readonly report: StatusReport;
   readonly tree: StatusTree;
   readonly pathTo: (branch: string) => ReadonlyArray<string>;
   readonly displayChainFor: (branch: string) => ReadonlyArray<string>;
+  readonly displayTreeFor: (branch: string) => DisplayTree;
   readonly rank: (branch: string) => number;
   readonly rootOf: (branch: string) => string;
   readonly wouldCreateCycle: (branch: string, parent: string) => boolean;
@@ -177,6 +183,7 @@ export const make = (input: StackGraphInput): StackGraph => {
   };
 
   const explicitChildren = new Map<string, Array<string>>();
+  const liveBranches = new Set(input.pulls.map((pull) => String(pull.head)));
   for (const link of input.state.links) {
     const parent = String(link.parent);
     const list = explicitChildren.get(parent) ?? [];
@@ -201,6 +208,21 @@ export const make = (input: StackGraphInput): StackGraph => {
     }
 
     return chain;
+  };
+
+  const displayTreeFor = (branch: string): DisplayTree => {
+    const root = pathTo(branch).find((name) => liveBranches.has(name)) ?? branch;
+    const build = (name: string, seen = new Set<string>()): DisplayTree => {
+      if (seen.has(name)) return { branch: name, children: [] };
+      const nextSeen = new Set(seen);
+      nextSeen.add(name);
+      const children = (explicitChildren.get(name) ?? [])
+        .filter((child) => liveBranches.has(child))
+        .map((child) => build(child, nextSeen));
+      return { branch: name, children };
+    };
+
+    return build(root);
   };
 
   const rank = (branch: string, seen = new Set<string>()): number => {
@@ -229,6 +251,7 @@ export const make = (input: StackGraphInput): StackGraph => {
     tree,
     pathTo,
     displayChainFor,
+    displayTreeFor,
     rank,
     rootOf,
     wouldCreateCycle: (branch: string, parent: string) =>
