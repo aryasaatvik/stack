@@ -1419,7 +1419,7 @@ ${note}`;
                     StackBlock.render({
                       pulls: selectedPulls,
                       metas,
-                      chain: graph.displayChainFor(String(pull.head)),
+                      tree: graph.displayTreeFor(String(pull.head)),
                       completed,
                       branch: String(pull.head),
                       previous: meta.body,

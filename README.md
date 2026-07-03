@@ -73,8 +73,10 @@ then repair descendants automatically after the root lands.
 - Refreshes stack blocks in descriptions.
 - Saves `.git/stack/undo.json` before mutations.
 
-GitHub stack blocks use compact `#101` references. GitLab blocks use `!101`
-references plus titles because bare GitLab MR links only show titles on hover.
+Stack blocks render open changes as a nested list where indentation shows the
+PR/MR target-branch topology. GitHub stack blocks use compact `#101`
+references. GitLab blocks use `!101` references plus titles because bare GitLab
+MR links only show titles on hover.
 
 If a repair fails, run:
 

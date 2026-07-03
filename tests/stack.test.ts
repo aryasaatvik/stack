@@ -1288,6 +1288,13 @@ describe("StackGraph", () => {
     expect(graph.pathTo("stack-c")).toEqual(["stack-a", "stack-c"]);
     expect(graph.displayChainFor("stack-b")).toEqual(["stack-a", "stack-b"]);
     expect(graph.displayChainFor("stack-c")).toEqual(["stack-a", "stack-c"]);
+    expect(graph.displayTreeFor("stack-b")).toEqual({
+      branch: "stack-a",
+      children: [
+        { branch: "stack-b", children: [] },
+        { branch: "stack-c", children: [] },
+      ],
+    });
     expect(graph.wouldCreateCycle("stack-a", "stack-b")).toBe(true);
   });
 });
@@ -3187,7 +3194,7 @@ describe("Stack", () => {
     }).pipe(Effect.provide(test.layer));
   });
 
-  it.effect("links render the stack as chronological GitHub checkboxes", () => {
+  it.effect("links render the stack as nested GitHub bullets", () => {
     const test = makeSync();
 
     return Effect.gen(function* () {
@@ -3199,9 +3206,8 @@ describe("Stack", () => {
       expect(body).not.toContain("Earlier in Stack");
       expect(body).not.toContain("Current / Remaining");
       expect(body).not.toContain("\nMerged\n");
-      expect(body).toContain("1. #4");
-      expect(body).toContain("2. #5");
-      expect(body).toContain("3. **#3** 👈 current");
+      expect(body).toContain("- #5 `stack-b`");
+      expect(body).toContain("  - **#3** 👈 current `stack-c`");
     }).pipe(Effect.provide(test.layer));
   });
 
@@ -3245,9 +3251,9 @@ describe("Stack", () => {
       yield* stack.links(true);
 
       const body = bodies.get(1) ?? "";
-      expect(body).toContain("1. **#1** 👈 current");
-      expect(body).toContain("2. #2");
-      expect(body).toContain("3. #3");
+      expect(body).toContain("- **#1** 👈 current `stack-a`");
+      expect(body).toContain("  - #2 `stack-b`");
+      expect(body).toContain("    - #3 `stack-c`");
     }).pipe(Effect.provide(layer));
   });
 
@@ -3264,14 +3270,13 @@ describe("Stack", () => {
       yield* stack.links(true);
 
       const body = test.bodies.get(3) ?? "";
-      expect(body).toContain("1. !4 - stack-a");
-      expect(body).toContain("2. !5 - fix+refactor(vcs): old title");
-      expect(body).toContain("3. **!3 - stack-c** 👈 current");
+      expect(body).toContain("- !5 - fix+refactor(vcs): old title `stack-b`");
+      expect(body).toContain("  - **!3 - stack-c** 👈 current `stack-c`");
       expect(body).not.toContain("#3");
     }).pipe(Effect.provide(test.layer));
   });
 
-  it.effect("links render the current path through a forked stack", () => {
+  it.effect("links render sibling PRs in a forked stack", () => {
     const bodies = new Map<number, string>();
     const pulls = [
       pullRef({ number: 1, head: "stack-a", base: "dev", url: "u1", draft: false }),
@@ -3348,9 +3353,9 @@ describe("Stack", () => {
       const stack = yield* Stack;
       yield* stack.links(true);
       const body = bodies.get(2) ?? "";
-      expect(body).toContain("1. #1");
-      expect(body).toContain("2. **#2** 👈 current");
-      expect(body).not.toContain("stack-c");
+      expect(body).toContain("- #1 `stack-a`");
+      expect(body).toContain("  - **#2** 👈 current `stack-b`");
+      expect(body).toContain("  - #3 `stack-c`");
     }).pipe(Effect.provide(layer));
   });
 
@@ -3389,9 +3394,9 @@ describe("Stack", () => {
       yield* stack.links(true);
 
       const body = bodies.get(3) ?? "";
-      expect(body).toContain("1. #1");
-      expect(body).toContain("2. #2");
-      expect(body).toContain("3. **#3** 👈 current");
+      expect(body).toContain("- #1");
+      expect(body).toContain("- #2 `stack-b`");
+      expect(body).toContain("  - **#3** 👈 current `stack-c`");
     }).pipe(Effect.provide(layer));
   });
 
@@ -3425,10 +3430,10 @@ describe("Stack", () => {
       yield* stack.links(true);
 
       const body = bodies.get(4) ?? "";
-      expect(body).toContain("1. #1");
+      expect(body).toContain("- #1");
       expect(body).not.toContain("#2");
       expect(body).not.toContain("#3");
-      expect(body).toContain("2. **#4** 👈 current");
+      expect(body).toContain("- **#4** 👈 current `stack-b`");
     }).pipe(Effect.provide(layer));
   });
 
@@ -3462,10 +3467,10 @@ describe("Stack", () => {
       yield* stack.links(true);
 
       const body = bodies.get(4) ?? "";
-      expect(body).toContain("1. #1");
-      expect(body).toContain("2. #2");
-      expect(body).toContain("3. #3");
-      expect(body).toContain("4. **#4** 👈 current");
+      expect(body).toContain("- #1");
+      expect(body).toContain("- #2");
+      expect(body).toContain("- #3");
+      expect(body).toContain("- **#4** 👈 current `stack-b`");
     }).pipe(Effect.provide(layer));
   });
 
@@ -5201,18 +5206,27 @@ describe("StackBlock", () => {
       draft: false,
     }),
   ];
+  const tree = {
+    branch: "feat/a",
+    children: [
+      {
+        branch: "feat/b",
+        children: [{ branch: "feat/c", children: [] }],
+      },
+    ],
+  };
 
-  it("renders GitHub PR references with the # prefix by default", () => {
+  it("renders GitHub PR references as a nested topology", () => {
     const block = StackBlock.render({
       pulls,
       metas: new Map(),
-      chain: ["feat/a", "feat/b", "feat/c"],
+      tree,
       branch: "feat/b",
       previous: "",
     });
-    expect(block).toContain("1. #1");
-    expect(block).toContain("2. **#2** 👈 current");
-    expect(block).toContain("3. #3");
+    expect(block).toContain("- #1 `feat/a`");
+    expect(block).toContain("  - **#2** 👈 current `feat/b`");
+    expect(block).toContain("    - #3 `feat/c`");
     expect(block).not.toContain("Feature A");
   });
 
@@ -5220,7 +5234,7 @@ describe("StackBlock", () => {
     const block = StackBlock.render({
       pulls,
       metas: new Map(),
-      chain: ["feat/a", "feat/b", "feat/c"],
+      tree,
       branch: "feat/b",
       previous: "",
     });
@@ -5231,7 +5245,7 @@ describe("StackBlock", () => {
     const block = StackBlock.render({
       pulls,
       metas: new Map(),
-      chain: ["feat/a", "feat/b", "feat/c"],
+      tree,
       branch: "feat/b",
       previous: "",
       blockLink: false,
@@ -5239,21 +5253,21 @@ describe("StackBlock", () => {
     expect(block).toContain("### Stack");
     expect(block).not.toContain("[Stack]");
     expect(block).not.toContain("https://github.com/kitlangton/stack");
-    expect(block).toContain("2. **#2** 👈 current");
+    expect(block).toContain("  - **#2** 👈 current `feat/b`");
   });
 
   it("renders GitLab MR references using the code host reference formatter", () => {
     const block = StackBlock.render({
       pulls,
       metas: new Map(),
-      chain: ["feat/a", "feat/b", "feat/c"],
+      tree,
       branch: "feat/c",
       previous: "",
       reference: (number) => `!${number}`,
     });
-    expect(block).toContain("1. !1");
-    expect(block).toContain("2. !2");
-    expect(block).toContain("3. **!3** 👈 current");
+    expect(block).toContain("- !1 `feat/a`");
+    expect(block).toContain("  - !2 `feat/b`");
+    expect(block).toContain("    - **!3** 👈 current `feat/c`");
     expect(block).not.toContain("#1");
     expect(block).not.toContain("Feature A");
   });
@@ -5262,15 +5276,15 @@ describe("StackBlock", () => {
     const block = StackBlock.render({
       pulls,
       metas: new Map(),
-      chain: ["feat/a", "feat/b", "feat/c"],
+      tree,
       branch: "feat/c",
       previous: "",
       reference: (number) => `!${number}`,
       showTitles: true,
     });
-    expect(block).toContain("1. !1 - Feature A");
-    expect(block).toContain("2. !2 - Feature B");
-    expect(block).toContain("3. **!3 - Feature C** 👈 current");
+    expect(block).toContain("- !1 - Feature A `feat/a`");
+    expect(block).toContain("  - !2 - Feature B `feat/b`");
+    expect(block).toContain("    - **!3 - Feature C** 👈 current `feat/c`");
   });
 
   it("can enrich completed GitLab history with MR titles", () => {
@@ -5286,7 +5300,7 @@ describe("StackBlock", () => {
     const block = StackBlock.render({
       pulls: [],
       metas: new Map(),
-      chain: [],
+      tree: null,
       branch: "feat/d",
       previous,
       reference: (number) => `!${number}`,
@@ -5297,9 +5311,9 @@ describe("StackBlock", () => {
         [3, "Feature C"],
       ]),
     });
-    expect(block).toContain("1. !1 - Feature A");
-    expect(block).toContain("2. !2 - Already titled");
-    expect(block).toContain("3. !3 - Feature C");
+    expect(block).toContain("- !1 - Feature A");
+    expect(block).toContain("- !2 - Already titled");
+    expect(block).toContain("- !3 - Feature C");
   });
 
   it("parses both # and ! prefixed entries from a previous block", () => {
@@ -5315,12 +5329,12 @@ describe("StackBlock", () => {
     const block = StackBlock.render({
       pulls: [pulls[2]!],
       metas: new Map(),
-      chain: ["feat/c"],
+      tree: { branch: "feat/c", children: [] },
       branch: "feat/c",
       previous,
       reference: (number) => `!${number}`,
     });
-    expect(block).toContain("**!3** 👈 current");
+    expect(block).toContain("- **!3** 👈 current `feat/c`");
   });
 
   it("does not duplicate live entries when prefix migrates between syncs", () => {
@@ -5336,7 +5350,7 @@ describe("StackBlock", () => {
     const block = StackBlock.render({
       pulls,
       metas: new Map(),
-      chain: ["feat/a", "feat/b", "feat/c"],
+      tree,
       branch: "feat/c",
       previous,
       reference: (number) => `!${number}`,
@@ -5344,9 +5358,39 @@ describe("StackBlock", () => {
     expect(block).not.toContain("#1");
     expect(block).not.toContain("#2");
     expect(block).not.toContain("#3");
-    expect(block).toContain("1. !1");
-    expect(block).toContain("2. !2");
-    expect(block).toContain("3. **!3** 👈 current");
+    expect(block).toContain("- !1 `feat/a`");
+    expect(block).toContain("  - !2 `feat/b`");
+    expect(block).toContain("    - **!3** 👈 current `feat/c`");
+  });
+
+  it("does not preserve open siblings from a stale flat block as history", () => {
+    const previous = `body before
+
+<!-- stack:links:start -->
+### [Stack](https://github.com/kitlangton/stack)
+
+1. #1
+2. #3
+3. **#2** 👈 current
+<!-- stack:links:end -->`;
+    const fork = {
+      branch: "feat/a",
+      children: [
+        { branch: "feat/b", children: [] },
+        { branch: "feat/c", children: [] },
+      ],
+    };
+    const block = StackBlock.render({
+      pulls,
+      metas: new Map(),
+      tree: fork,
+      branch: "feat/b",
+      previous,
+    });
+
+    expect(block.match(/#3/g)).toHaveLength(1);
+    expect(block).toContain("  - #3 `feat/c`");
+    expect(block).not.toContain("- #3\n");
   });
 });
 
