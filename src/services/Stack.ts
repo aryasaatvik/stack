@@ -1256,7 +1256,7 @@ ${note}`;
               new StackOperationError("--continue-on-failure requires --all"),
             );
           }
-          const current = requestedBranch && dryRun ? "" : yield* git.current();
+          const current = (requestedBranch || all) && dryRun ? "" : yield* git.current();
           return yield* Effect.gen(function* () {
             if (!dryRun) yield* clean();
             if (!dryRun) yield* git.fetch();
