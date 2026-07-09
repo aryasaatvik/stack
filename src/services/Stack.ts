@@ -1266,6 +1266,8 @@ ${note}`;
                     url: now.url,
                     draft: now.draft,
                     checks: now.checks,
+                    body: now.body,
+                    labels: now.labels,
                   }),
                 );
               }
@@ -1665,38 +1667,12 @@ ${note}`;
             ]);
             const selectedPulls = yield* changesForLinks(state.links, pulls);
             const prs = new Map(selectedPulls.map((pull) => [String(pull.head), pull]));
-            const info = yield* Effect.all(
-              state.links
-                .map((link) => link.pr)
-                .filter((pr): pr is NonNullable<typeof pr> => pr !== null)
-                .map((pr) =>
-                  codeHost
-                    .change(pr)
-                    .pipe(
-                      Effect.catchTag("CodeHostChangeNotFoundError", () => Effect.succeed(null)),
-                    ),
-                ),
-              { concurrency: cfg.codeHostConcurrency },
-            );
-            const metas = new Map(
-              info
-                .filter((item): item is PullMeta => item !== null)
-                .map((item) => [String(item.head), item]),
-            );
-            const metasByNumber = new Map(
-              info
-                .filter((item): item is PullMeta => item !== null)
-                .map((item) => [Number(item.number), item]),
-            );
             const completedTitles = yield* Effect.gen(function* () {
               if (codeHost.provider !== "gitlab") return new Map<number, string>();
+              const openNumbers = new Set(selectedPulls.map((pull) => Number(pull.number)));
               const numbers = [
-                ...new Set(
-                  info
-                    .filter((item): item is PullMeta => item !== null)
-                    .flatMap((item) => StackBlock.references(item.body)),
-                ),
-              ];
+                ...new Set(selectedPulls.flatMap((pull) => StackBlock.references(pull.body))),
+              ].filter((number) => !openNumbers.has(number));
               const completed = yield* Effect.all(
                 numbers.map((number) =>
                   codeHost
@@ -1725,24 +1701,22 @@ ${note}`;
               .filter((pull): pull is PullRef => Boolean(pull))
               .map((pull) =>
                 Effect.gen(function* () {
-                  const meta =
-                    metasByNumber.get(Number(pull.number)) ?? (yield* codeHost.change(pull.number));
                   const next = StackBlock.splice(
-                    meta.body,
+                    pull.body,
                     StackBlock.render({
                       pulls: selectedPulls,
-                      metas,
+                      metas: prs,
                       tree: graph.displayTreeFor(String(pull.head)),
                       completed,
                       branch: String(pull.head),
-                      previous: meta.body,
+                      previous: pull.body,
                       reference,
                       showTitles: codeHost.provider === "gitlab",
                       completedTitles,
                       blockLink: cfg.blockLink,
                     }),
                   );
-                  if (next === meta.body) return null;
+                  if (next === pull.body) return null;
                   if (apply) {
                     yield* step(`update ${reference(Number(pull.number))} stack block`);
                     yield* codeHost.body(pull.number, next);
@@ -2121,6 +2095,8 @@ ${note}`;
                     url: item.url,
                     draft: item.draft,
                     checks: item.checks,
+                    body: item.body,
+                    labels: item.labels,
                   })
                 : item;
             });
@@ -2211,9 +2187,12 @@ ${note}`;
                     writeState: writeScopedState(writeScope),
                   },
                 );
+                const changedOpenPulls = repair.actions.some(
+                  (action) => action._tag === "RetargetPull" || action._tag === "CreatePull",
+                );
                 const repairedPulls = yield* changesForLinks(
                   repair.state.links,
-                  yield* codeHost.changes(),
+                  changedOpenPulls ? yield* codeHost.changes() : nextPulls,
                 );
                 const notes = yield* linksFor(repair.state, true, landed, repairedPulls);
                 const tail = next ? `next root: ${next}` : "next root: none";
@@ -2296,9 +2275,12 @@ ${note}`;
               writeState: writeScopedState(stackBranches),
               preserveUndo: true,
             });
+            const changedOpenPulls = repair.actions.some(
+              (action) => action._tag === "RetargetPull" || action._tag === "CreatePull",
+            );
             const repairedPulls = yield* changesForLinks(
               repair.state.links,
-              yield* codeHost.changes(),
+              changedOpenPulls ? yield* codeHost.changes() : pulls,
             );
             const notes = yield* linksFor(repair.state, true, landed, repairedPulls);
             return [...repair.lines, ...notes.lines];
