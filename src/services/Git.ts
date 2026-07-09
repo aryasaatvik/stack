@@ -82,7 +82,18 @@ export const live = Layer.effect(
       ),
     );
 
+    // Snapshot cache: worktrees() is called on every replay/release/drop. A deep-stack
+    // repair loop calls replay() once per branch, and replay's checkout dance is net-neutral
+    // on the worktree->branch/dirty mapping (it always restores the original checkout via its
+    // ensuring chain), so one snapshot per CLI run stays valid across N replays. Invalidated
+    // only by mutations that actually change the mapping: switch, release, drop.
+    let worktreeSnapshot: ReadonlyArray<Worktree> | null = null;
+    const invalidateWorktrees = () => {
+      worktreeSnapshot = null;
+    };
+
     const worktrees = Effect.fn("Git.worktrees")(function* () {
+      if (worktreeSnapshot) return worktreeSnapshot;
       const out = yield* run("git", ["worktree", "list", "--porcelain", "-z"]);
       const records: Array<{
         path: string;
@@ -116,7 +127,7 @@ export const live = Layer.effect(
       }
       if (current) records.push(current);
 
-      return yield* Effect.forEach(
+      const snapshot = yield* Effect.forEach(
         records.filter((record) => !record.prunable),
         (record) =>
           dirtyAt(record.path).pipe(
@@ -129,8 +140,10 @@ export const live = Layer.effect(
               }),
             ),
           ),
-        { concurrency: "unbounded" },
+        { concurrency: 4 },
       );
+      worktreeSnapshot = snapshot;
+      return snapshot;
     });
 
     const checkedOutDirtyError = (branch: string, worktree: Worktree) =>
@@ -183,9 +196,10 @@ export const live = Layer.effect(
         Effect.map((out) => (out ? Option.some(out) : Option.none<string>())),
       ),
     );
-    const switch_ = Effect.fn("Git.switch")((branch: string) =>
-      run("git", ["checkout", branch]).pipe(Effect.asVoid),
-    );
+    const switch_ = Effect.fn("Git.switch")(function* (branch: string) {
+      yield* run("git", ["checkout", branch]);
+      invalidateWorktrees();
+    });
     const fetch = Effect.fn("Git.fetch")(() =>
       run("git", ["fetch", "origin", "--prune"]).pipe(Effect.asVoid),
     );
@@ -351,7 +365,8 @@ export const live = Layer.effect(
       if (owner.dirty.length > 0) {
         return yield* Effect.fail(releaseDirtyError(branch, owner));
       }
-      return yield* runAt(owner.path, "git", ["checkout", "--detach", "HEAD"]).pipe(Effect.asVoid);
+      yield* runAt(owner.path, "git", ["checkout", "--detach", "HEAD"]);
+      invalidateWorktrees();
     });
     const drop = Effect.fn("Git.drop")(function* (branch: string) {
       const owner =
@@ -368,7 +383,8 @@ export const live = Layer.effect(
           ),
         );
       }
-      return yield* run("git", ["branch", "-D", branch], [0, 1]).pipe(Effect.asVoid);
+      yield* run("git", ["branch", "-D", branch], [0, 1]);
+      invalidateWorktrees();
     });
     const restore = Effect.fn("Git.restore")((branch: string, name: string) =>
       run("git", ["branch", "-f", branch, name]).pipe(Effect.asVoid),

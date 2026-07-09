@@ -1652,6 +1652,79 @@ describe("Git", () => {
       ]);
     }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
   });
+
+  it.effect("worktrees caches within a run and recomputes after switch", () => {
+    const calls: Array<ReadonlyArray<string>> = [];
+    const proc = Layer.succeed(
+      Proc.Service,
+      Proc.Service.of({
+        exec: (_cwd, tool, args) =>
+          Effect.sync(() => {
+            calls.push([tool, ...args]);
+            if (args[0] === "worktree") {
+              return ["worktree /tmp/stack", "HEAD a", "branch refs/heads/dev", ""].join("\0");
+            }
+            return "";
+          }),
+      }),
+    );
+    const listCalls = () =>
+      calls.filter((call) => call[0] === "git" && call[1] === "worktree").length;
+
+    return Effect.gen(function* () {
+      const git = yield* Git.Service;
+
+      yield* git.worktrees();
+      yield* git.worktrees();
+      expect(listCalls()).toBe(1);
+
+      yield* git.switch("dev");
+      yield* git.worktrees();
+      expect(listCalls()).toBe(2);
+    }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
+  });
+
+  it.effect("worktrees recomputes after release and after drop", () => {
+    const calls: Array<ReadonlyArray<string>> = [];
+    const proc = Layer.succeed(
+      Proc.Service,
+      Proc.Service.of({
+        exec: (_cwd, tool, args) =>
+          Effect.sync(() => {
+            calls.push([tool, ...args]);
+            if (args[0] === "worktree") {
+              return [
+                "worktree /tmp/stack",
+                "HEAD a",
+                "branch refs/heads/dev",
+                "worktree /tmp/stack-b",
+                "HEAD b",
+                "branch refs/heads/stack-b",
+                "",
+              ].join("\0");
+            }
+            return "";
+          }),
+      }),
+    );
+    const listCalls = () =>
+      calls.filter((call) => call[0] === "git" && call[1] === "worktree").length;
+
+    return Effect.gen(function* () {
+      const git = yield* Git.Service;
+
+      yield* git.worktrees();
+      expect(listCalls()).toBe(1);
+
+      yield* git.release("stack-b");
+      yield* git.worktrees();
+      expect(listCalls()).toBe(2);
+
+      yield* git.drop("dev");
+      yield* git.worktrees();
+      expect(listCalls()).toBe(3);
+    }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
+  });
 });
 
 describe("GitHub", () => {
