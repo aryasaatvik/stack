@@ -65,11 +65,17 @@ work. Repeat after any parent branch changes or a squash merge lands.
 - `stack track <branch> --onto <parent>` — manually record stack intent only
   when target branches don't already encode it.
 - `stack sync [branch]` — preview inferred links and repairs (non-mutating).
-  Scopes to the current stack if no branch is given.
+  Scopes to `branch`'s stack, or the current stack when no branch is given.
+  Off-stack (trunk checkout or detached HEAD) it auto-scopes the single stack
+  when only one exists, no-ops when none exist, and otherwise lists the stack
+  roots and asks you to pick one with `sync <branch>` or `sync --all`.
 - `stack sync --apply [branch]` — infer links, remove stale links, repair
   descendants, retarget changes, refresh stack blocks, show a tree summary.
-- `stack sync --apply --keep-going` — process independent stacks separately,
-  report successes and failures, exit nonzero if any failed.
+- `stack sync --all` — sync every stack in the repository instead of one; the
+  only mode that performs repo-wide stale-link cleanup and inference, and
+  required for `--continue-on-failure`.
+- `stack sync --apply --all --keep-going` — process independent stacks
+  separately, report successes and failures, exit nonzero if any failed.
 - `stack merge [branch]` — dry-run root merge plus descendant repair. Infers
   the root from the current branch.
 - `stack merge --apply` — retarget child changes, squash-merge the root, repair
