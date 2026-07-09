@@ -41,22 +41,25 @@ export const layer = (opts: Options) =>
         pullMeta({
           number: found.number,
           title: found.title ?? `stack: ${found.head}`,
-          body: "",
+          body: found.body,
           head: found.head,
           headRepository: found.headRepository,
           base: found.base,
           url: found.url,
           draft: found.draft,
           state: opts.state,
-          labels: [],
+          labels: found.labels,
         });
 
-      const changes = Effect.fn("CodeHost.memory.changes")(() => Ref.get(pullsRef));
+      const changes = Effect.fn("CodeHost.memory.changes")(function* () {
+        yield* record("changes");
+        return yield* Ref.get(pullsRef);
+      });
       const requireOpen = Effect.fn("CodeHost.memory.requireOpen")(function* (pr: number) {
         const found = (yield* Ref.get(pullsRef)).some((item) => item.number === pr);
         if (!found) return yield* new CodeHostChangeNotFoundError(pr);
       });
-      const change = Effect.fn("CodeHost.memory.change")(function* (pr: number) {
+      const materialize = Effect.fn("CodeHost.memory.materialize")(function* (pr: number) {
         const metas = yield* Ref.get(metasRef);
         const meta = metas.get(pr);
         if (meta) return meta;
@@ -65,6 +68,10 @@ export const layer = (opts: Options) =>
         const made = metaFor(found);
         yield* Ref.update(metasRef, (metas) => new Map(metas).set(pr, made));
         return made;
+      });
+      const change = Effect.fn("CodeHost.memory.change")(function* (pr: number) {
+        yield* record(`change ${pr}`);
+        return yield* materialize(pr);
       });
       const edit = Effect.fn("CodeHost.memory.edit")((pr: number, base: string) =>
         Effect.gen(function* () {
@@ -82,6 +89,8 @@ export const layer = (opts: Options) =>
                     url: item.url,
                     draft: item.draft,
                     checks: item.checks,
+                    body: item.body,
+                    labels: item.labels,
                   })
                 : item,
             ),
@@ -113,7 +122,7 @@ export const layer = (opts: Options) =>
       const body = Effect.fn("CodeHost.memory.body")((pr: number, body: string) =>
         Effect.gen(function* () {
           yield* requireOpen(pr);
-          yield* change(pr);
+          yield* materialize(pr);
           yield* record(`body ${pr}`);
           yield* Ref.update(metasRef, (metas) => {
             const nextMetas = new Map(metas);
@@ -156,6 +165,8 @@ export const layer = (opts: Options) =>
           base,
           url: opts.url(number),
           draft: false,
+          body,
+          labels: labels.map((name) => new PullLabel({ name })),
         });
         yield* record(`create ${branch} ${base}`);
         yield* Ref.update(pullsRef, (pulls) => [...pulls, made]);

@@ -31,6 +31,10 @@ export class BranchRef extends Schema.Class<BranchRef>("BranchRef")({
   head: Schema.String,
 }) {}
 
+export class PullLabel extends Schema.Class<PullLabel>("PullLabel")({
+  name: Schema.String,
+}) {}
+
 export class PullRef extends Schema.Class<PullRef>("PullRef")({
   number: PrNumber,
   title: Schema.NullOr(Schema.String),
@@ -40,10 +44,8 @@ export class PullRef extends Schema.Class<PullRef>("PullRef")({
   url: PullUrl,
   draft: Schema.Boolean,
   checks: Schema.NullOr(Schema.String),
-}) {}
-
-export class PullLabel extends Schema.Class<PullLabel>("PullLabel")({
-  name: Schema.String,
+  body: Schema.String,
+  labels: Schema.Array(PullLabel),
 }) {}
 
 export class PullMeta extends Schema.Class<PullMeta>("PullMeta")({
@@ -327,6 +329,8 @@ export const pullRef = (value: {
   url: string;
   draft: boolean;
   checks?: string | null;
+  body: string;
+  labels: ReadonlyArray<PullLabel>;
 }) =>
   new PullRef({
     number: prNumber(value.number),
@@ -337,6 +341,8 @@ export const pullRef = (value: {
     url: pullUrl(value.url),
     draft: value.draft,
     checks: value.checks ?? null,
+    body: value.body,
+    labels: Array.from(value.labels),
   });
 
 export const pullMeta = (value: {
