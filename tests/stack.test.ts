@@ -2935,6 +2935,97 @@ describe("Stack", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  it.effect("scoped sync follows a retargeted PR base across stacks", () => {
+    // `mover` is stored under stack A (parent a-child) but its open PR is
+    // retargeted onto b-child in stack B. Membership must follow the PR base, so
+    // scoping stack B includes mover and scoping stack A excludes it.
+    const layerFor = () =>
+      stackTestLayer({
+        current: "dev",
+        refs: [
+          ref("dev", "dev-h"),
+          ref("a-root", "a-root-h"),
+          ref("a-child", "a-child-h"),
+          ref("b-root", "b-root-h"),
+          ref("b-child", "b-child-h"),
+          ref("mover", "mover-h"),
+        ],
+        pulls: [
+          pr(1, "a-root", "dev"),
+          pr(2, "a-child", "a-root"),
+          pr(3, "b-root", "dev"),
+          pr(4, "b-child", "b-root"),
+          pr(5, "mover", "b-child"),
+        ],
+        bases: bases(
+          ["a-root", "dev", "dev-h"],
+          ["a-child", "a-root", "a-root-h"],
+          ["b-root", "dev", "dev-h"],
+          ["b-child", "b-root", "b-root-h"],
+          ["mover", "b-child", "b-child-h"],
+        ),
+        state: stackState([
+          stackLink({ branch: "mover", parent: "a-child", anchor: "a-child-h", pr: 5 }),
+        ]),
+      });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const inB = (yield* stack.sync({ branch: "b-root" })).join("\n");
+      const inA = (yield* stack.sync({ branch: "a-root" })).join("\n");
+
+      expect(inB).toContain("b-root");
+      expect(inB).toContain("mover");
+      expect(inA).toContain("a-root");
+      expect(inA).not.toContain("mover");
+    }).pipe(Effect.provide(layerFor()));
+  });
+
+  it.effect("scoped sync computes no merge-base for out-of-scope stacks", () => {
+    const baseCalls: Array<string> = [];
+    const baseMap = new Map(
+      Object.entries(
+        bases(
+          ["a-root", "dev", "dev-h"],
+          ["a-child", "a-root", "a-root-h"],
+          ["b-root", "dev", "dev-h"],
+          ["b-child", "b-root", "b-root-h"],
+        ),
+      ),
+    );
+    const layer = stackTestLayer({
+      current: "dev",
+      refs: [
+        ref("dev", "dev-h"),
+        ref("a-root", "a-root-h"),
+        ref("a-child", "a-child-h"),
+        ref("b-root", "b-root-h"),
+        ref("b-child", "b-child-h"),
+      ],
+      pulls: [
+        pr(1, "a-root", "dev"),
+        pr(2, "a-child", "a-root"),
+        pr(3, "b-root", "dev"),
+        pr(4, "b-child", "b-root"),
+      ],
+      service: {
+        base: (branch, parent) =>
+          Effect.sync(() => {
+            baseCalls.push(String(branch));
+            return Option.fromNullishOr(baseMap.get(`${branch}:${parent}`));
+          }),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync({ branch: "a-root" });
+
+      expect(baseCalls).not.toContain("b-root");
+      expect(baseCalls).not.toContain("b-child");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("status flags missing parents after branch deletion", () =>
     Effect.gen(function* () {
       const stack = yield* Stack;

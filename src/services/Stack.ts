@@ -365,6 +365,88 @@ ${note}`;
             .pipe(Effect.flatMap((latest) => store.write(mergeState(latest, branches, next)))),
         );
 
+      // Cheap stack-membership graph over stored links and open PR bases. It
+      // performs no per-branch merge-base calls, so sync can resolve scope before
+      // paying the reconcile/infer cost, and never pays it for out-of-scope stacks.
+      const syncMembership = (
+        state: ReturnType<typeof stackState>,
+        pulls: ReadonlyArray<PullRef>,
+      ) => {
+        const trunks = new Set(cfg.trunks.map(String));
+        const storedBranches = new Set(state.links.map((link) => String(link.branch)));
+        const storedParent = new Map(
+          state.links.map((link) => [String(link.branch), String(link.parent)]),
+        );
+        const prsByHead = new Map<string, Array<PullRef>>();
+        for (const pull of pulls) {
+          const head = String(pull.head);
+          const list = prsByHead.get(head) ?? [];
+          list.push(pull);
+          prsByHead.set(head, list);
+        }
+        // A branch follows its sole open PR base when it has exactly one, so a PR
+        // retargeted into another stack moves with it; otherwise it falls back to
+        // its stored link parent.
+        const edge = (branch: string) => {
+          const heads = prsByHead.get(branch);
+          if (heads && heads.length === 1) return String(heads[0]!.base);
+          return storedParent.get(branch) ?? null;
+        };
+        const grounded = (branch: string, seen = new Set<string>()): boolean => {
+          if (seen.has(branch)) return false;
+          seen.add(branch);
+          const parent = edge(branch);
+          if (parent === null) return false;
+          return trunks.has(parent) || grounded(parent, seen);
+        };
+        const members = new Set<string>(storedBranches);
+        for (const head of prsByHead.keys()) if (grounded(head)) members.add(head);
+
+        const children = new Map<string, Array<string>>();
+        for (const branch of members) {
+          const parent = edge(branch);
+          if (parent === null) continue;
+          const list = children.get(parent) ?? [];
+          list.push(branch);
+          children.set(parent, list);
+        }
+        for (const list of children.values()) list.sort((a, b) => a.localeCompare(b));
+
+        // A trunk-parented branch is a stack root only if it is a stored link or
+        // another branch is based on it; a standalone trunk-root PR is never a root.
+        const roots = [...members]
+          .filter((branch) => {
+            const parent = edge(branch);
+            if (parent === null || !trunks.has(parent)) return false;
+            return storedBranches.has(branch) || (children.get(branch)?.length ?? 0) > 0;
+          })
+          .sort((a, b) => a.localeCompare(b));
+
+        const scopeBranches = (root: string) => {
+          const branches = new Set<string>();
+          const visit = (branch: string) => {
+            if (branches.has(branch)) return;
+            branches.add(branch);
+            for (const child of children.get(branch) ?? []) visit(child);
+          };
+          visit(root);
+          return branches;
+        };
+
+        const rootByMember = new Map<string, string>();
+        for (const root of roots) {
+          for (const branch of scopeBranches(root)) {
+            if (!rootByMember.has(branch)) rootByMember.set(branch, root);
+          }
+        }
+
+        return {
+          roots,
+          scopeBranches,
+          rootOf: (branch: string) => rootByMember.get(branch) ?? null,
+        };
+      };
+
       const actionBranch = (action: StackResult.StackResultItem) => {
         switch (action._tag) {
           case "Text":
@@ -1183,119 +1265,152 @@ ${note}`;
               git.refs(),
               codeHost.changes(),
             ]);
-            const reconciled = yield* reconcileApplyState(
-              state,
-              refs,
-              pulls,
-              dryRun ? "dry-run" : "apply",
-            );
-            const plan = yield* inferApplyPlan(reconciled.state, refs, pulls);
-            const planned = stateWithPlan(reconciled.state, plan);
             const mode: StackResult.Mode = dryRun ? "dry-run" : "apply";
 
-            const graph = StackGraph.make({
-              state: planned,
-              refs,
-              pulls,
-              trunks: cfg.trunks,
-              current,
-            });
-            const linked = new Set(planned.links.map((link) => String(link.branch)));
+            // Reconcile stale links and infer PR-base links over a subset of the
+            // repo (or the whole repo), then plan its track/reconcile actions.
+            const reconcilePlan = (
+              scopedState: ReturnType<typeof stackState>,
+              scopedPulls: ReadonlyArray<PullRef>,
+            ) =>
+              Effect.gen(function* () {
+                const reconciled = yield* reconcileApplyState(scopedState, refs, scopedPulls, mode);
+                const plan = yield* inferApplyPlan(reconciled.state, refs, scopedPulls);
+                const planned = stateWithPlan(reconciled.state, plan);
+                const initialActions = [...reconciled.actions, ...plan.map(StackResult.track)];
+                return { planned, initialActions, replayAnchors: reconciled.replayAnchors };
+              });
+
+            // Repair one scope (or the whole repo when target is null) and render
+            // the tree summary from an already-scoped plan.
+            const repairAndRender = (opts: {
+              readonly planned: ReturnType<typeof stackState>;
+              readonly initialActions: ReadonlyArray<StackResult.StackResultItem>;
+              readonly replayAnchors: ReadonlyMap<string, string>;
+              readonly target: {
+                readonly root: string;
+                readonly branches: ReadonlySet<string>;
+              } | null;
+              readonly preserveUndo?: boolean;
+            }) =>
+              Effect.gen(function* () {
+                const { target } = opts;
+                const scoped = target ? filterState(opts.planned, target.branches) : opts.planned;
+                const scopedInitial = target
+                  ? filterActions(opts.initialActions, target.branches)
+                  : opts.initialActions;
+                const replayAnchors = target
+                  ? new Map(
+                      [...opts.replayAnchors].filter(([branch]) => target.branches.has(branch)),
+                    )
+                  : opts.replayAnchors;
+                const writeState = target ? writeScopedState(target.branches) : undefined;
+                const scopedPulls = yield* changesForLinks(scoped.links, pulls);
+                const repair = yield* repairStack(scoped, refs, scopedPulls, {
+                  apply: !dryRun,
+                  journalState: state,
+                  replayAnchors,
+                  initialActions: scopedInitial,
+                  ...(writeState ? { writeState } : {}),
+                  preserveUndo: opts.preserveUndo ?? false,
+                });
+                const changedOpenPulls = repair.actions.some(
+                  (action) => action._tag === "RetargetPull" || action._tag === "CreatePull",
+                );
+                const notesPulls = yield* changesForLinks(
+                  repair.state.links,
+                  !dryRun && changedOpenPulls ? yield* codeHost.changes() : pulls,
+                );
+                const notes = yield* linksFor(repair.state, !dryRun, new Set(), notesPulls);
+                const changed = repair.actions.length > 0 || notes.actions.length > 0;
+                const lines = !changed
+                  ? renderSyncTree({
+                      title: "Stack is current",
+                      state: scoped,
+                      pulls: scopedPulls,
+                      actions: [],
+                      mode,
+                    })
+                  : renderSyncTree({
+                      title: dryRun ? "Sync preview" : "Synced stack",
+                      state: repair.state,
+                      pulls: scopedPulls,
+                      actions: [...repair.actions, ...notes.actions],
+                      mode,
+                    });
+                return { lines, undo: repair.undo };
+              });
+
+            if (!all) {
+              // Resolve scope from the cheap membership graph before any
+              // merge-base work, then reconcile/infer/repair only that subset.
+              const membership = syncMembership(state, pulls);
+              const scope = yield* Effect.gen(function* () {
+                if (requestedBranch) {
+                  const root = membership.rootOf(requestedBranch);
+                  if (!root) {
+                    return yield* Effect.fail(
+                      new StackOperationError(`${requestedBranch} is not part of a tracked stack`),
+                    );
+                  }
+                  return { root, branches: membership.scopeBranches(root) };
+                }
+                const currentRoot = membership.rootOf(current);
+                if (currentRoot) {
+                  return { root: currentRoot, branches: membership.scopeBranches(currentRoot) };
+                }
+                const roots = membership.roots;
+                if (roots.length === 1) {
+                  return { root: roots[0]!, branches: membership.scopeBranches(roots[0]!) };
+                }
+                if (roots.length === 0) return null;
+                return yield* Effect.fail(
+                  new StackOperationError(
+                    [
+                      `off-stack: ${roots.length} stacks found`,
+                      ...roots.map((root) => `  ${root}`),
+                      "run: stack sync <branch> to sync one stack",
+                      "or: stack sync --all to sync every stack",
+                    ].join("\n"),
+                  ),
+                );
+              });
+
+              const scopedState = scope ? filterState(state, scope.branches) : state;
+              const scopedPulls = scope
+                ? pulls.filter((pull) => scope.branches.has(String(pull.head)))
+                : pulls;
+              const { planned, initialActions, replayAnchors } = yield* reconcilePlan(
+                scopedState,
+                scopedPulls,
+              );
+              const result = yield* repairAndRender({
+                planned,
+                initialActions,
+                replayAnchors,
+                target: scope,
+              });
+              return result.lines;
+            }
+
+            // --all: reconcile and infer across the whole repo, then repair every
+            // stack (optionally continuing past per-stack failures).
+            const { planned, initialActions, replayAnchors } = yield* reconcilePlan(state, pulls);
+
+            if (!continueOnFailure) {
+              const result = yield* repairAndRender({
+                planned,
+                initialActions,
+                replayAnchors,
+                target: null,
+              });
+              return result.lines;
+            }
+
             const roots = cfg.trunks
               .flatMap((trunk) => planned.links.filter((link) => String(link.parent) === trunk))
               .map((link) => String(link.branch))
               .sort((a, b) => a.localeCompare(b));
-            const scopeFor = (root: string) => ({
-              root,
-              branches: scopedBranches(planned, root),
-            });
-            const scope = yield* Effect.gen(function* () {
-              if (all) return null;
-              if (requestedBranch) {
-                if (!linked.has(requestedBranch)) {
-                  return yield* Effect.fail(
-                    new StackOperationError(`${requestedBranch} is not part of a tracked stack`),
-                  );
-                }
-                return scopeFor(graph.rootOf(requestedBranch));
-              }
-              if (linked.has(current)) return scopeFor(graph.rootOf(current));
-              if (roots.length === 1) return scopeFor(roots[0]!);
-              if (roots.length === 0) return null;
-              return yield* Effect.fail(
-                new StackOperationError(
-                  [
-                    `off-stack: ${roots.length} stacks found`,
-                    ...roots.map((root) => `  ${root}`),
-                    "run: stack sync <branch> to sync one stack",
-                    "or: stack sync --all to sync every stack",
-                  ].join("\n"),
-                ),
-              );
-            });
-
-            const initialActions = [...reconciled.actions, ...plan.map(StackResult.track)];
-
-            const syncScoped = Effect.fn("Stack.sync.scoped")(
-              (
-                target: { readonly root: string; readonly branches: ReadonlySet<string> } | null,
-                preserveUndo = false,
-              ) =>
-                Effect.gen(function* () {
-                  const scoped = target ? filterState(planned, target.branches) : planned;
-                  const scopedInitial = target
-                    ? filterActions(initialActions, target.branches)
-                    : initialActions;
-                  const replayAnchors = target
-                    ? new Map(
-                        [...reconciled.replayAnchors].filter(([branch]) =>
-                          target.branches.has(branch),
-                        ),
-                      )
-                    : reconciled.replayAnchors;
-                  const writeState = target ? writeScopedState(target.branches) : undefined;
-                  const scopedPulls = yield* changesForLinks(scoped.links, pulls);
-                  const repair = yield* repairStack(scoped, refs, scopedPulls, {
-                    apply: !dryRun,
-                    journalState: state,
-                    replayAnchors,
-                    initialActions: scopedInitial,
-                    ...(writeState ? { writeState } : {}),
-                    preserveUndo,
-                  });
-                  const changedOpenPulls = repair.actions.some(
-                    (action) => action._tag === "RetargetPull" || action._tag === "CreatePull",
-                  );
-                  const notesPulls = yield* changesForLinks(
-                    repair.state.links,
-                    !dryRun && changedOpenPulls ? yield* codeHost.changes() : pulls,
-                  );
-                  const notes = yield* linksFor(repair.state, !dryRun, new Set(), notesPulls);
-                  const changed = repair.actions.length > 0 || notes.actions.length > 0;
-                  const lines = !changed
-                    ? renderSyncTree({
-                        title: "Stack is current",
-                        state: scoped,
-                        pulls: scopedPulls,
-                        actions: [],
-                        mode,
-                      })
-                    : renderSyncTree({
-                        title: dryRun ? "Sync preview" : "Synced stack",
-                        state: repair.state,
-                        pulls: scopedPulls,
-                        actions: [...repair.actions, ...notes.actions],
-                        mode,
-                      });
-                  return { lines, undo: repair.undo };
-                }),
-            );
-
-            if (!continueOnFailure) {
-              const result = yield* syncScoped(scope);
-              return result.lines;
-            }
-
             const succeeded = new Array<string>();
             const failed = new Array<{ root: string; error: string }>();
             const sections = new Array<string>();
@@ -1312,7 +1427,13 @@ ${note}`;
 
             for (const root of roots) {
               const result = yield* Effect.result(
-                syncScoped({ root, branches: scopedBranches(planned, root) }, true),
+                repairAndRender({
+                  planned,
+                  initialActions,
+                  replayAnchors,
+                  target: { root, branches: scopedBranches(planned, root) },
+                  preserveUndo: true,
+                }),
               );
               if (Result.isSuccess(result)) {
                 succeeded.push(root);
