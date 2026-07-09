@@ -54,6 +54,7 @@ export interface StackService {
   readonly sync: (opts?: {
     readonly apply?: boolean;
     readonly branch?: string;
+    readonly all?: boolean;
     readonly continueOnFailure?: boolean;
   }) => Effect.Effect<ReadonlyArray<string>, StackError>;
   readonly doctor: () => Effect.Effect<ReadonlyArray<string>, StackError>;
@@ -1161,7 +1162,18 @@ ${note}`;
           const apply = opts?.apply ?? false;
           const dryRun = !apply;
           const requestedBranch = opts?.branch;
+          const all = opts?.all ?? false;
           const continueOnFailure = opts?.continueOnFailure ?? false;
+          if (all && requestedBranch) {
+            return yield* Effect.fail(
+              new StackOperationError("use either a branch or --all, not both"),
+            );
+          }
+          if (continueOnFailure && !all) {
+            return yield* Effect.fail(
+              new StackOperationError("--continue-on-failure requires --all"),
+            );
+          }
           const current = requestedBranch && dryRun ? "" : yield* git.current();
           return yield* Effect.gen(function* () {
             if (!dryRun) yield* clean();
@@ -1189,24 +1201,38 @@ ${note}`;
               current,
             });
             const linked = new Set(planned.links.map((link) => String(link.branch)));
-            const resolveScope = (branch: string, explicit: boolean) => {
-              if (!linked.has(branch)) {
-                if (explicit) {
-                  return Effect.fail<StackOperationError>(
-                    new StackOperationError(`${branch} is not part of a tracked stack`),
+            const roots = cfg.trunks
+              .flatMap((trunk) => planned.links.filter((link) => String(link.parent) === trunk))
+              .map((link) => String(link.branch))
+              .sort((a, b) => a.localeCompare(b));
+            const scopeFor = (root: string) => ({
+              root,
+              branches: scopedBranches(planned, root),
+            });
+            const scope = yield* Effect.gen(function* () {
+              if (all) return null;
+              if (requestedBranch) {
+                if (!linked.has(requestedBranch)) {
+                  return yield* Effect.fail(
+                    new StackOperationError(`${requestedBranch} is not part of a tracked stack`),
                   );
                 }
-                return Effect.succeed<{
-                  readonly root: string;
-                  readonly branches: ReadonlySet<string>;
-                } | null>(null);
+                return scopeFor(graph.rootOf(requestedBranch));
               }
-              const root = graph.rootOf(branch);
-              return Effect.succeed({ root, branches: scopedBranches(planned, root) });
-            };
-            const scope = requestedBranch
-              ? yield* resolveScope(requestedBranch, true)
-              : yield* resolveScope(current, false);
+              if (linked.has(current)) return scopeFor(graph.rootOf(current));
+              if (roots.length === 1) return scopeFor(roots[0]!);
+              if (roots.length === 0) return null;
+              return yield* Effect.fail(
+                new StackOperationError(
+                  [
+                    `off-stack: ${roots.length} stacks found`,
+                    ...roots.map((root) => `  ${root}`),
+                    "run: stack sync <branch> to sync one stack",
+                    "or: stack sync --all to sync every stack",
+                  ].join("\n"),
+                ),
+              );
+            });
 
             const initialActions = [...reconciled.actions, ...plan.map(StackResult.track)];
 
@@ -1265,15 +1291,11 @@ ${note}`;
                 }),
             );
 
-            if (requestedBranch || !continueOnFailure) {
+            if (!continueOnFailure) {
               const result = yield* syncScoped(scope);
               return result.lines;
             }
 
-            const roots = cfg.trunks
-              .flatMap((trunk) => planned.links.filter((link) => link.parent === trunk))
-              .map((link) => String(link.branch))
-              .sort((a, b) => a.localeCompare(b));
             const succeeded = new Array<string>();
             const failed = new Array<{ root: string; error: string }>();
             const sections = new Array<string>();

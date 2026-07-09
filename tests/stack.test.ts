@@ -2222,7 +2222,181 @@ describe("GitLab", () => {
   });
 });
 
+// Two independent, drift-free stacks off a shared `dev` trunk, optionally with a
+// standalone trunk-root PR (`loner`) that no other change is based on. Repairs are
+// no-ops because every anchor already matches its parent head, so sync only infers
+// links and refreshes stack blocks.
+const twoStackLayer = (opts: { readonly loner?: boolean; readonly current?: string } = {}) => {
+  const seen: Array<string> = [];
+  const refs = [
+    ref("dev", "dev-h"),
+    ref("alpha-root", "alpha-root-h"),
+    ref("alpha-child", "alpha-child-h"),
+    ref("beta-root", "beta-root-h"),
+    ref("beta-child", "beta-child-h"),
+    ...(opts.loner ? [ref("loner", "loner-h")] : []),
+  ];
+  return {
+    seen,
+    layer: stackTestLayer({
+      current: opts.current ?? "dev",
+      refs,
+      pulls: [
+        pr(1, "alpha-root", "dev"),
+        pr(2, "alpha-child", "alpha-root"),
+        pr(3, "beta-root", "dev"),
+        pr(4, "beta-child", "beta-root"),
+        ...(opts.loner ? [pr(9, "loner", "dev")] : []),
+      ],
+      bases: bases(
+        ["alpha-root", "dev", "dev-h"],
+        ["alpha-child", "alpha-root", "alpha-root-h"],
+        ["beta-root", "dev", "dev-h"],
+        ["beta-child", "beta-root", "beta-root-h"],
+        ...(opts.loner
+          ? ([["loner", "dev", "dev-h"]] as ReadonlyArray<readonly [string, string, string]>)
+          : []),
+      ),
+      service: {
+        body: (number) => Effect.sync(() => void seen.push(`body ${number}`)),
+      },
+    }),
+  };
+};
+
 describe("Stack", () => {
+  it.effect("sync off-stack with multiple stacks errors in dry-run and apply", () => {
+    const { layer } = twoStackLayer({ loner: true });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const preview = String(yield* Effect.flip(stack.sync()));
+      const applied = String(yield* Effect.flip(stack.sync({ apply: true })));
+
+      for (const message of [preview, applied]) {
+        expect(message).toContain("off-stack: 2 stacks found");
+        expect(message).toContain("  alpha-root");
+        expect(message).toContain("  beta-root");
+        expect(message).toContain("run: stack sync <branch> to sync one stack");
+        expect(message).toContain("or: stack sync --all to sync every stack");
+        // standalone trunk-root PRs are not roots and never appear in the listing
+        expect(message).not.toContain("loner");
+      }
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sync off-stack auto-scopes when exactly one stack exists", () => {
+    const layer = stackTestLayer({
+      current: "dev",
+      refs: [
+        ref("dev", "dev-h"),
+        ref("alpha-root", "alpha-root-h"),
+        ref("alpha-child", "alpha-child-h"),
+        ref("loner", "loner-h"),
+      ],
+      pulls: [
+        pr(1, "alpha-root", "dev"),
+        pr(2, "alpha-child", "alpha-root"),
+        pr(9, "loner", "dev"),
+      ],
+      bases: bases(
+        ["alpha-root", "dev", "dev-h"],
+        ["alpha-child", "alpha-root", "alpha-root-h"],
+        ["loner", "dev", "dev-h"],
+      ),
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      const items = yield* stack.sync({ apply: true });
+      const state = yield* store.read();
+
+      expect(items).toContain("Synced stack");
+      expect(items.join("\n")).toContain("alpha-root");
+      // only the single real stack is tracked; the standalone PR is left untouched
+      expect(state.links.map((link) => String(link.branch))).toEqual(["alpha-child", "alpha-root"]);
+      expect(items.join("\n")).not.toContain("loner");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sync off-stack with no stacks is a no-op", () => {
+    const layer = stackTestLayer({
+      current: "dev",
+      refs: [ref("dev", "dev-h"), ref("loner", "loner-h")],
+      pulls: [pr(9, "loner", "dev")],
+      bases: bases(["loner", "dev", "dev-h"]),
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      const items = yield* stack.sync();
+      const state = yield* store.read();
+
+      expect(items.join("\n")).not.toContain("loner");
+      expect(state.links).toEqual([]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sync --all previews every stack", () => {
+    const { layer } = twoStackLayer();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const output = (yield* stack.sync({ all: true })).join("\n");
+
+      expect(output).toContain("alpha-root #1");
+      expect(output).toContain("alpha-child #2");
+      expect(output).toContain("beta-root #3");
+      expect(output).toContain("beta-child #4");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sync --all applies across every stack", () => {
+    const { layer } = twoStackLayer({ loner: true });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      yield* stack.sync({ all: true, apply: true });
+      const state = yield* store.read();
+
+      expect(state.links.map((link) => String(link.branch))).toEqual([
+        "alpha-child",
+        "alpha-root",
+        "beta-child",
+        "beta-root",
+      ]);
+      // standalone trunk-root PRs are still never auto-tracked, even under --all
+      expect(state.links.find((link) => String(link.branch) === "loner")).toBeUndefined();
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sync --all rejects a branch argument", () => {
+    const { layer } = twoStackLayer();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const error = String(yield* Effect.flip(stack.sync({ all: true, branch: "alpha-root" })));
+
+      expect(error).toContain("use either a branch or --all, not both");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sync --continue-on-failure requires --all", () => {
+    const { layer } = twoStackLayer();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const error = String(
+        yield* Effect.flip(stack.sync({ apply: true, continueOnFailure: true })),
+      );
+
+      expect(error).toContain("--continue-on-failure requires --all");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("status shows PR titles when GitHub details are available", () =>
     Effect.gen(function* () {
       const stack = yield* Stack;
@@ -2738,7 +2912,9 @@ describe("Stack", () => {
     return Effect.gen(function* () {
       const stack = yield* Stack;
       const store = yield* Store;
-      const error = yield* Effect.flip(stack.sync({ apply: true, continueOnFailure: true }));
+      const error = yield* Effect.flip(
+        stack.sync({ apply: true, all: true, continueOnFailure: true }),
+      );
       const items = (error instanceof Error ? error.message : String(error)).split("\n");
       const output = items.join("\n");
       const undo = yield* store.readUndo();
