@@ -1,0 +1,5 @@
+---
+"@aryasaatvik/stack": patch
+---
+
+`stack sync` now persists each link's `anchor` as "the parent tip the child was last made consistent with" and prefers it over the merge-base when computing a child's replay range. Previously the surgical old-parent tip was known only within a single run (from in-run backups), so after a manual parent rewrite — the prescribed recovery for a replay conflict — the next sync fell back to a wide merge-base range and replayed rewritten-parent commits whose patches no longer applied (the observed `bun.lock` conflict class, where a surgical `git rebase --onto <new-parent> <old-parent-tip> <child>` was clean). The anchor is refreshed on every successful replay, on verification of an already-consistent link, and at track time; the replay-range base now prefers same-run rewrites, then the persisted anchor when it is still an ancestor of the child, then the merge-base fallback. Dry-run reads anchors but never writes them, and out-of-scope links keep their anchors untouched.

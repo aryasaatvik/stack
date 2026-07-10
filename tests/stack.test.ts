@@ -3820,6 +3820,9 @@ describe("Stack", () => {
         stackLink({ branch: "child", parent: "dev", anchor: "parent-tip", pr: 2 }),
       ]),
       service: {
+        // The stranded parent tip is still an ancestor of the child, so the
+        // persisted anchor is the surgical replay base.
+        ancestor: (a: string, b: string) => Effect.succeed(a === "parent-tip" && b === "child"),
         commits: (from: string, branch: string) =>
           Effect.succeed(
             branch === "child" && from === "parent-tip"
@@ -3841,6 +3844,214 @@ describe("Stack", () => {
 
       expect(seen).toContain("rebase child origin/dev child-only");
       expect(seen).not.toContain("rebase child origin/dev parent-1,parent-2,child-only");
+    }).pipe(Effect.provide(layer));
+  });
+
+  // Headline cross-run scenario: run A repaired child onto base and persisted
+  // anchor = base's tip at that time ("base-A"); base was then rewritten
+  // out-of-band ("base-new"). Run B must replay exactly the persisted-anchor
+  // range (child's own commits) rather than the wide merge-base range, which
+  // would drag in the rewritten-parent commit whose patch no longer applies.
+  it.effect("sync replays from the persisted anchor after an out-of-band parent rewrite", () => {
+    const seen: Array<string> = [];
+    const commitsCalls: Array<string> = [];
+    const layer = stackTestLayer({
+      current: "child",
+      refs: [ref("dev", "dev-1"), ref("base", "base-new"), ref("child", "child-old")],
+      pulls: [pr(1, "base", "dev"), pr(2, "child", "base")],
+      state: stackState([
+        stackLink({ branch: "base", parent: "dev", anchor: "dev-1", pr: 1 }),
+        stackLink({ branch: "child", parent: "base", anchor: "base-A", pr: 2 }),
+      ]),
+      service: {
+        // Only the anchor recorded in run A ("base-A") is an ancestor of the
+        // child; "base-new" is the rewritten tip.
+        ancestor: (a: string, b: string) => Effect.succeed(a === "base-A" && b === "child"),
+        base: (branch: string, parent: string) =>
+          Effect.succeed(
+            Option.fromNullishOr(
+              branch === "base" && (parent === "origin/dev" || parent === "dev")
+                ? "dev-1"
+                : branch === "child" && parent === "base"
+                  ? "base-fork"
+                  : undefined,
+            ),
+          ),
+        commits: (from: string, branch: string) =>
+          Effect.sync(() => {
+            commitsCalls.push(`${from}->${branch}`);
+            return branch === "child" && from === "base-A"
+              ? ["child-only"]
+              : branch === "child" && from === "base-fork"
+                ? ["base-rewritten-1", "child-only"]
+                : [];
+          }),
+        novel: (_parent: string, _branch: string, commits: ReadonlyArray<string>) =>
+          Effect.succeed(commits),
+        replay: (branch: string, parent: string, commits: ReadonlyArray<string>) =>
+          Effect.sync(() => seen.push(`rebase ${branch} ${parent} ${commits.join(",")}`)),
+        push: (branch: string) => Effect.sync(() => void seen.push(`push ${branch}`)),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync({ apply: true });
+
+      // The commit range was computed from the persisted anchor, not the
+      // wider merge-base ("base-fork"), so the rewritten-parent commit never
+      // enters the replay.
+      expect(commitsCalls).toContain("base-A->child");
+      expect(commitsCalls).not.toContain("base-fork->child");
+      expect(seen).toContain("rebase child base child-only");
+      expect(seen).not.toContain("rebase child base base-rewritten-1,child-only");
+    }).pipe(Effect.provide(layer));
+  });
+
+  // A stale/garbage anchor that is no longer an ancestor of the child must fall
+  // back to the merge-base range so the run still succeeds.
+  it.effect("sync falls back to merge-base when the persisted anchor is not an ancestor", () => {
+    const seen: Array<string> = [];
+    const commitsCalls: Array<string> = [];
+    const layer = stackTestLayer({
+      current: "child",
+      refs: [ref("dev", "dev-1"), ref("base", "base-new"), ref("child", "child-old")],
+      pulls: [pr(1, "base", "dev"), pr(2, "child", "base")],
+      state: stackState([
+        stackLink({ branch: "base", parent: "dev", anchor: "dev-1", pr: 1 }),
+        stackLink({ branch: "child", parent: "base", anchor: "garbage", pr: 2 }),
+      ]),
+      service: {
+        // "garbage" is not an ancestor of anything, so the ancestor probe is false.
+        ancestor: () => Effect.succeed(false),
+        base: (branch: string, parent: string) =>
+          Effect.succeed(
+            Option.fromNullishOr(
+              branch === "base" && (parent === "origin/dev" || parent === "dev")
+                ? "dev-1"
+                : branch === "child" && parent === "base"
+                  ? "base-fork"
+                  : undefined,
+            ),
+          ),
+        commits: (from: string, branch: string) =>
+          Effect.sync(() => {
+            commitsCalls.push(`${from}->${branch}`);
+            return branch === "child" && from === "base-fork" ? ["child-only"] : [];
+          }),
+        novel: (_parent: string, _branch: string, commits: ReadonlyArray<string>) =>
+          Effect.succeed(commits),
+        replay: (branch: string, parent: string, commits: ReadonlyArray<string>) =>
+          Effect.sync(() => seen.push(`rebase ${branch} ${parent} ${commits.join(",")}`)),
+        push: (branch: string) => Effect.sync(() => void seen.push(`push ${branch}`)),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync({ apply: true });
+
+      expect(commitsCalls).toContain("base-fork->child");
+      expect(commitsCalls).not.toContain("garbage->child");
+      expect(seen).toContain("rebase child base child-only");
+      expect(seen).toContain("push child");
+    }).pipe(Effect.provide(layer));
+  });
+
+  // An already-consistent link (no drift) still has its anchor refreshed to the
+  // parent's current tip in the written state, so the next run's replay range is
+  // measured from an up-to-date anchor.
+  it.effect("sync --apply refreshes the anchor of an already-consistent link", () => {
+    const layer = stackTestLayer({
+      current: "child",
+      refs: [ref("dev", "dev-1"), ref("base", "base-1"), ref("child", "child-1")],
+      pulls: [pr(1, "base", "dev"), pr(2, "child", "base")],
+      bases: {
+        "base:dev": "dev-1",
+        "base:origin/dev": "dev-1",
+        "child:base": "base-1",
+      },
+      state: stackState([
+        stackLink({ branch: "base", parent: "dev", anchor: "dev-1", pr: 1 }),
+        stackLink({ branch: "child", parent: "base", anchor: "base-stale", pr: 2 }),
+      ]),
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      yield* stack.sync({ apply: true });
+      const state = yield* store.read();
+
+      expect(state.links.find((link) => String(link.branch) === "child")?.anchor).toBe("base-1");
+    }).pipe(Effect.provide(layer));
+  });
+
+  // Dry-run reads anchors but never writes them: a stale anchor stays put so
+  // bare sync remains non-mutating for stack metadata.
+  it.effect("dry-run sync does not rewrite anchors", () => {
+    const layer = stackTestLayer({
+      current: "child",
+      refs: [ref("dev", "dev-1"), ref("base", "base-1"), ref("child", "child-1")],
+      pulls: [pr(1, "base", "dev"), pr(2, "child", "base")],
+      bases: {
+        "base:dev": "dev-1",
+        "base:origin/dev": "dev-1",
+        "child:base": "base-1",
+      },
+      state: stackState([
+        stackLink({ branch: "base", parent: "dev", anchor: "dev-1", pr: 1 }),
+        stackLink({ branch: "child", parent: "base", anchor: "base-stale", pr: 2 }),
+      ]),
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      yield* stack.sync();
+      const state = yield* store.read();
+
+      expect(state.links.find((link) => String(link.branch) === "child")?.anchor).toBe(
+        "base-stale",
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  // A subtree sync must never touch the anchor of an out-of-scope sibling link,
+  // even while refreshing the in-scope branch's anchor.
+  it.effect("subtree sync leaves out-of-scope sibling anchors untouched", () => {
+    const layer = stackTestLayer({
+      current: "dev",
+      refs: [
+        ref("dev", "dev-1"),
+        ref("root", "root-1"),
+        ref("branch-a", "a-1"),
+        ref("branch-b", "b-1"),
+      ],
+      pulls: [pr(1, "root", "dev"), pr(2, "branch-a", "root"), pr(3, "branch-b", "root")],
+      bases: {
+        "root:dev": "dev-1",
+        "root:origin/dev": "dev-1",
+        "branch-a:root": "root-1",
+        "branch-b:root": "root-1",
+      },
+      state: stackState([
+        stackLink({ branch: "root", parent: "dev", anchor: "dev-1", pr: 1 }),
+        stackLink({ branch: "branch-a", parent: "root", anchor: "a-stale", pr: 2 }),
+        stackLink({ branch: "branch-b", parent: "root", anchor: "b-keep", pr: 3 }),
+      ]),
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      yield* stack.sync({ branch: "branch-a", apply: true });
+      const state = yield* store.read();
+
+      // In-scope branch-a is refreshed to root's current tip; the sibling
+      // branch-b (out of scope) keeps its stored anchor.
+      expect(state.links.find((link) => String(link.branch) === "branch-a")?.anchor).toBe("root-1");
+      expect(state.links.find((link) => String(link.branch) === "branch-b")?.anchor).toBe("b-keep");
     }).pipe(Effect.provide(layer));
   });
 

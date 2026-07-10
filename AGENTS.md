@@ -36,7 +36,7 @@
 
 ## Implementation notes
 
-- Persist stack metadata in `.git/stack/state.json`.
+- Persist stack metadata in `.git/stack/state.json`. Each link's `anchor` is the parent tip the child was last verified/made consistent with (refreshed on every successful replay, on verification of an already-consistent link, and at track time). Repair prefers it as the replay-range base — after same-run rewrites (`replayAnchors`/`saved` backups) but before the merge-base fallback — whenever it is still an ancestor of the child, so a manual parent rewrite between runs replays exactly the child's own commits. Dry-run reads anchors but never writes them.
 - Persist undo state in `.git/stack/undo.json`.
 - User preferences live in `git config stack.*` (read at startup in the CLI `live` layer), not in `state.json`. Current keys: `stack.codeHost`, `stack.trunks`, and `stack.blockLink` (default true; set false to render a plain `### Stack` heading without the attribution link).
 - Prefer `Context.Service`-based Effect services and test-first changes.
