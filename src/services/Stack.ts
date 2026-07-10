@@ -218,11 +218,13 @@ ${note}`;
           StackResult.StackResultItem & { readonly _tag: "CreatePull" }
         >();
         const updatedPrs = new Set<number>();
+        const fastForwarded = new Set<string>();
         let backups = 0;
         for (const action of opts.actions) {
           if (action._tag === "Rebase") rebased.set(action.branch, action.parent);
           if (action._tag === "Push") pushed.set(action.branch, action.remotes);
           if (action._tag === "CreatePull") created.set(action.branch, action);
+          if (action._tag === "FastForward") fastForwarded.add(action.branch);
           if (action._tag === "Backup") backups += 1;
           if (action._tag === "UpdateStackLinks") updatedPrs.add(action.pr);
         }
@@ -324,6 +326,12 @@ ${note}`;
         }
 
         const summary = new Array<string>();
+        if (fastForwarded.size > 0) {
+          const prefix = opts.mode === "dry-run" ? "would " : "";
+          for (const branch of [...fastForwarded].sort((a, b) => a.localeCompare(b))) {
+            summary.push(`${prefix}fast-forward ${branch} to origin/${branch}`);
+          }
+        }
         if (created.size > 0) {
           const verb =
             opts.mode === "dry-run" ? `Would create ${requestLabel}s` : `Created ${requestLabel}s`;
@@ -484,6 +492,7 @@ ${note}`;
           case "RemoveLink":
           case "UpdateLink":
           case "Reparent":
+          case "FastForward":
           case "Backup":
           case "Rebase":
           case "Push":
@@ -945,11 +954,97 @@ ${note}`;
               }
             };
 
+            // Effective tip per reconciled branch: origin's tip when the local ref
+            // was fast-forwarded to it. Drift detection and `onto` resolution below
+            // consult this so a stale local ref never measures drift or replays
+            // against the wrong parent — in apply mode we also move the local ref,
+            // but in dry-run the ref stays put and this map carries origin's tip.
+            const reconciledTips = new Map<string, string>();
+
+            // Reconcile local branch refs against origin before any drift detection.
+            // `git fetch` moves only remote-tracking refs; when a parent (or an
+            // in-scope branch) was force-pushed from another worktree/agent, the
+            // local ref is stale and drift would be measured against the wrong tip —
+            // producing a silent no-op "success" or a rebase onto the stale parent.
+            //
+            // We touch only branches this run already reads: in-scope members and
+            // their non-trunk parent rebase targets (trunks resolve to origin/<trunk>
+            // and need no reconciliation). Per branch, comparing local L and origin R:
+            //   L == R                -> nothing.
+            //   L is an ancestor of R -> fast-forward the local ref to R.
+            //   R is an ancestor of L -> local is strictly ahead; it will be pushed.
+            //   diverged              -> asymmetric: a read-only parent target is
+            //                            fatal (we will not guess which tip wins),
+            //                            but an in-scope member is left to repair,
+            //                            whose replay + force-with-lease push is
+            //                            exactly the retry-after-failed-push recovery.
+            const reconcile = Effect.fn("Stack.repairStack.reconcile")(function* () {
+              const members = new Set(state.links.map((link) => String(link.branch)));
+              // Value = isMember. Every branch in state.links is inserted with `true`
+              // before any child link can add it as a parent-only target, so the
+              // `!targets.has(parent)` guard never downgrades a member to a
+              // parent-only `false` entry — parents already seen keep their flag.
+              const targets = new Map<string, boolean>();
+              for (const link of state.links) {
+                const branch = String(link.branch);
+                if (live.has(branch)) targets.set(branch, true);
+                const parent = resolve(String(link.parent));
+                if (parent && !trunk(parent) && live.has(parent) && !targets.has(parent)) {
+                  targets.set(parent, members.has(parent));
+                }
+              }
+
+              for (const [branch, isMember] of targets) {
+                const localRef = live.get(branch);
+                if (!localRef) continue;
+                const local = String(localRef.head);
+                const remoteRef = yield* git.head(`origin/${branch}`);
+                if (Option.isNone(remoteRef)) continue;
+                const remote = remoteRef.value;
+                if (local === remote) continue;
+
+                // One merge-base call classifies behind/ahead/diverged: mb == local
+                // means local is strictly behind origin, mb == remote means local is
+                // strictly ahead, anything else is a divergence.
+                const mergeBase = yield* git.base(local, remote);
+                const mb = Option.isSome(mergeBase) ? mergeBase.value : null;
+                if (mb === local) {
+                  reconciledTips.set(branch, remote);
+                  actions.push({ _tag: "FastForward", mode, branch });
+                  if (apply) yield* git.fastForward(branch);
+                  heads.set(branch, remote);
+                  tips.set(branch, remote);
+                  live.set(branch, branchRef({ name: branch, head: remote }));
+                  continue;
+                }
+                if (mb === remote) continue;
+
+                // Diverged. Repair owns in-scope members; a read-only parent is fatal.
+                if (isMember) continue;
+                return yield* Effect.fail(
+                  new StackOperationError(
+                    [
+                      `${branch} has diverged from origin/${branch}:`,
+                      `  local:  ${local}`,
+                      `  origin: ${remote}`,
+                      "",
+                      `${branch} is a read-only rebase target for this sync, so stack will not guess which tip is correct.`,
+                      "Reconcile it, then rerun:",
+                      `  git branch -f ${branch} origin/${branch}            # if origin is correct`,
+                      `  git push --force-with-lease origin ${branch}        # if your local ${branch} is correct`,
+                    ].join("\n"),
+                  ),
+                );
+              }
+            });
+
+            yield* reconcile();
+
             const plannedRepairBranches = Effect.fn("Stack.repairStack.plannedRepairBranches")(
               function* () {
                 const branches = new Set<string>();
                 const plannedMoved = new Set<string>();
-                const plannedTips = new Map<string, string | null>();
+                const plannedTips = new Map<string, string | null>(reconciledTips);
 
                 for (const link of [...state.links].sort(
                   (a, b) => graph.rank(String(a.branch)) - graph.rank(String(b.branch)),
@@ -1286,7 +1381,10 @@ ${note}`;
           const current = (requestedBranch || all) && dryRun ? "" : yield* git.current();
           return yield* Effect.gen(function* () {
             if (!dryRun) yield* clean();
-            if (!dryRun) yield* git.fetch();
+            // Fetch in dry-run too: refreshing remote-tracking refs is a read
+            // refresh, not a mutation, and reconciliation/drift detection below
+            // must see origin's real tips so previews match what apply would do.
+            yield* git.fetch();
             const [state, refs, pulls] = yield* Effect.all([
               store.read(),
               git.refs(),

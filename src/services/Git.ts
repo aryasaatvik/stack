@@ -27,6 +27,8 @@ export interface Interface {
   readonly remote: () => Effect.Effect<Option.Option<string>, ExecError>;
   readonly switch: (branch: string) => Effect.Effect<void, ExecError>;
   readonly head: (name: string) => Effect.Effect<Option.Option<string>, ExecError>;
+  readonly ancestor: (a: string, b: string) => Effect.Effect<boolean, ExecError>;
+  readonly fastForward: (branch: string) => Effect.Effect<void, ExecError>;
   readonly base: (
     branch: string,
     parent: string,
@@ -205,6 +207,44 @@ export const live = Layer.effect(
         Effect.map((out) => (out ? Option.some(out) : Option.none<string>())),
       ),
     );
+    // `git merge-base --is-ancestor a b` exits 0 when a is an ancestor of b, 1
+    // when it is not; anything else is a real error (e.g. an unknown ref).
+    const ancestor = Effect.fn("Git.ancestor")((a: string, b: string) =>
+      run("git", ["merge-base", "--is-ancestor", a, b]).pipe(
+        Effect.as(true),
+        Effect.catchTag("ExecError", (err) =>
+          err.code === 1 ? Effect.succeed(false) : Effect.fail(err),
+        ),
+      ),
+    );
+    // Fast-forward a local branch ref to its origin counterpart. `git branch -f`
+    // refuses a checked-out branch, so when a worktree owns it we fast-forward
+    // there instead; a dirty owner worktree is fatal (naming it) since we cannot
+    // move the ref out from under uncommitted work.
+    const fastForward = Effect.fn("Git.fastForward")(function* (branch: string) {
+      const owner = (yield* worktrees()).find((worktree) => worktree.branch === branch) ?? null;
+      if (owner) {
+        if (owner.dirty.length > 0) {
+          return yield* Effect.fail(
+            new ExecError(
+              "git",
+              ["merge", "--ff-only", `origin/${branch}`],
+              1,
+              [
+                `${branch} is checked out at ${owner.path} with local changes:`,
+                ...owner.dirty.map((line) => `  ${line}`),
+                "",
+                `Commit, stash, or clean that worktree before fast-forwarding ${branch} to origin/${branch}.`,
+              ].join("\n"),
+            ),
+          );
+        }
+        return yield* runAt(owner.path, "git", ["merge", "--ff-only", `origin/${branch}`]).pipe(
+          Effect.asVoid,
+        );
+      }
+      return yield* run("git", ["branch", "-f", branch, `origin/${branch}`]).pipe(Effect.asVoid);
+    });
     const base = Effect.fn("Git.base")(function* (branch: string, parent: string) {
       const out = yield* run("git", ["merge-base", branch, parent], [0, 1]);
       return out ? Option.some(out) : Option.none<string>();
@@ -348,6 +388,8 @@ export const live = Layer.effect(
       remote,
       switch: switch_,
       head,
+      ancestor,
+      fastForward,
       base,
       commits,
       novel,
@@ -388,6 +430,8 @@ export const test = (opts: {
                 : undefined),
           ),
         ),
+      ancestor: () => Effect.succeed(false),
+      fastForward: () => Effect.void,
       base: (branch: string, parent: string) =>
         Effect.succeed(Option.fromNullishOr(opts.bases?.[`${branch}:${parent}`])),
       commits: () => Effect.succeed([]),

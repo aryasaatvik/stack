@@ -89,6 +89,8 @@ const gitAndCodeHost = (service: Partial<Git.Interface & CodeHost.Interface>) =>
     remote: () => Effect.succeed(Option.none()),
     switch: () => Effect.void,
     head: () => Effect.succeed(Option.none()),
+    ancestor: () => Effect.succeed(false),
+    fastForward: () => Effect.void,
     base: () => Effect.succeed(Option.none()),
     commits: () => Effect.succeed([]),
     novel: (_parent, _branch, commits) => Effect.succeed(commits),
@@ -3223,6 +3225,228 @@ describe("Stack", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  // parent -> child on trunk dev. `sync child` scopes to the child subtree, so the
+  // parent is a read-only rebase target. Drives local vs origin/<branch> tips,
+  // ancestry, fast-forward, replay, and push through the Git seam so reconciliation
+  // can be asserted directly.
+  const reconcileScenario = (opts: {
+    readonly localParent: string;
+    readonly originParent: string;
+    readonly localChild: string;
+    readonly originChild: string;
+    readonly childBase: string;
+    readonly ancestors: ReadonlyArray<readonly [string, string]>;
+    readonly current?: string;
+  }) => {
+    const events: Array<string> = [];
+    const ffCalls: Array<string> = [];
+    const rebaseCalls: Array<string> = [];
+    const pushCalls: Array<string> = [];
+    const commitsCalls: Array<string> = [];
+    const heads = new Map<string, string>([
+      ["dev", "dev-1"],
+      ["origin/dev", "dev-1"],
+      ["parent", opts.localParent],
+      ["origin/parent", opts.originParent],
+      ["child", opts.localChild],
+      ["origin/child", opts.originChild],
+    ]);
+    const anc = new Set(opts.ancestors.map(([a, b]) => `${a}<${b}`));
+    const layer = stackTestLayer({
+      current: opts.current ?? "child",
+      refs: [ref("dev", "dev-1"), ref("parent", opts.localParent), ref("child", opts.localChild)],
+      pulls: [pr(1, "parent", "dev"), pr(2, "child", "parent")],
+      state: stackState([
+        stackLink({ branch: "parent", parent: "dev", anchor: "dev-1", pr: 1 }),
+        stackLink({ branch: "child", parent: "parent", anchor: opts.childBase, pr: 2 }),
+      ]),
+      service: {
+        head: (name) => Effect.succeed(Option.fromNullishOr(heads.get(name))),
+        ancestor: (a, b) => Effect.succeed(anc.has(`${a}<${b}`)),
+        fastForward: (branch) =>
+          Effect.sync(() => {
+            ffCalls.push(String(branch));
+            events.push(`ff ${branch}`);
+            const origin = heads.get(`origin/${String(branch)}`);
+            if (origin) heads.set(String(branch), origin);
+          }),
+        commits: (from, branch) =>
+          Effect.sync(() => {
+            commitsCalls.push(`${from}..${branch}`);
+            return [`${branch}-commit`];
+          }),
+        base: (branch, parent) =>
+          Effect.sync(() => {
+            // Branch-name pairs used by drift detection / replay-range selection.
+            if (branch === "child" && parent === "parent") return Option.some(opts.childBase);
+            if (branch === "parent" && (parent === "origin/dev" || parent === "dev"))
+              return Option.some("dev-1");
+            // SHA pairs from reconcile's single merge-base classification: the
+            // ancestor of the pair is the merge base; unrelated pairs diverge.
+            if (anc.has(`${branch}<${parent}`)) return Option.some(String(branch));
+            if (anc.has(`${parent}<${branch}`)) return Option.some(String(parent));
+            return Option.none();
+          }),
+        replay: (branch, parent) =>
+          Effect.sync(() => {
+            rebaseCalls.push(`${branch} ${parent}`);
+            events.push(`rebase ${branch} ${parent}`);
+          }),
+        push: (branch) =>
+          Effect.sync(() => {
+            pushCalls.push(String(branch));
+            events.push(`push ${branch}`);
+          }),
+      },
+    });
+    return { layer, events, ffCalls, rebaseCalls, pushCalls, commitsCalls };
+  };
+
+  it.effect("sync <child> --apply fast-forwards a stale parent and rebases the child", () => {
+    // Parent force-pushed to p-new; local parent ref stale at p-old; child is
+    // consistent with the STALE local parent (the silent no-op case).
+    const scenario = reconcileScenario({
+      localParent: "p-old",
+      originParent: "p-new",
+      localChild: "c-1",
+      originChild: "c-1",
+      childBase: "p-old",
+      ancestors: [["p-old", "p-new"]],
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync({ branch: "child", apply: true });
+
+      expect(scenario.ffCalls).toContain("parent");
+      expect(scenario.rebaseCalls).toContain("child parent");
+      expect(scenario.pushCalls).toContain("child");
+      // Parent is fast-forwarded before the child replays onto it.
+      expect(scenario.events.indexOf("ff parent")).toBeLessThan(
+        scenario.events.indexOf("rebase child parent"),
+      );
+    }).pipe(Effect.provide(scenario.layer));
+  });
+
+  it.effect("sync <child> dry-run previews the fast-forward and moves no local ref", () => {
+    const scenario = reconcileScenario({
+      localParent: "p-old",
+      originParent: "p-new",
+      localChild: "c-1",
+      originChild: "c-1",
+      childBase: "p-old",
+      ancestors: [["p-old", "p-new"]],
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const output = (yield* stack.sync({ branch: "child" })).join("\n");
+
+      expect(output).toContain("would fast-forward parent to origin/parent");
+      expect(output).toContain("would rebase onto parent");
+      // Dry-run moves no local ref and performs no replay or push.
+      expect(scenario.ffCalls).toHaveLength(0);
+      expect(scenario.rebaseCalls).toHaveLength(0);
+      expect(scenario.pushCalls).toHaveLength(0);
+    }).pipe(Effect.provide(scenario.layer));
+  });
+
+  it.effect("sync <child> fails loudly when a read-only parent diverged from origin", () => {
+    const scenario = reconcileScenario({
+      localParent: "p-a",
+      originParent: "p-b",
+      localChild: "c-1",
+      originChild: "c-1",
+      childBase: "p-a",
+      ancestors: [],
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const error = yield* Effect.flip(stack.sync({ branch: "child", apply: true }));
+      const message = String(error);
+
+      expect(message).toContain("parent has diverged from origin/parent");
+      expect(message).toContain("p-a");
+      expect(message).toContain("p-b");
+      expect(message).toContain("git branch -f parent origin/parent");
+      // Nothing was mutated.
+      expect(scenario.ffCalls).toHaveLength(0);
+      expect(scenario.rebaseCalls).toHaveLength(0);
+      expect(scenario.pushCalls).toHaveLength(0);
+    }).pipe(Effect.provide(scenario.layer));
+  });
+
+  it.effect("sync <child> --apply fast-forwards a stale in-scope child before replay", () => {
+    // The repaired branch itself is behind origin (a stale local child); it must
+    // be fast-forwarded to origin before replay so the replay does not clobber
+    // commits that already landed on the remote.
+    const scenario = reconcileScenario({
+      localParent: "p-1",
+      originParent: "p-1",
+      localChild: "c-old",
+      originChild: "c-new",
+      childBase: "p-0",
+      ancestors: [["c-old", "c-new"]],
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync({ branch: "child", apply: true });
+
+      expect(scenario.ffCalls).toContain("child");
+      expect(scenario.rebaseCalls).toContain("child parent");
+      expect(scenario.events.indexOf("ff child")).toBeLessThan(
+        scenario.events.indexOf("rebase child parent"),
+      );
+      // Commit selection runs against the child's merge base with the parent
+      // (invariant under the child's own fast-forward), not a stale tip.
+      expect(scenario.commitsCalls).toContain("p-0..child");
+    }).pipe(Effect.provide(scenario.layer));
+  });
+
+  it.effect("sync <child> --apply proceeds when the repaired branch diverged from origin", () => {
+    // A diverged in-scope member is left to repair: replay + force-with-lease push
+    // is the retry-after-failed-push recovery, so no loud error and no ff.
+    const scenario = reconcileScenario({
+      localParent: "p-1",
+      originParent: "p-1",
+      localChild: "c-a",
+      originChild: "c-b",
+      childBase: "p-0",
+      ancestors: [],
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync({ branch: "child", apply: true });
+
+      expect(scenario.ffCalls).not.toContain("child");
+      expect(scenario.rebaseCalls).toContain("child parent");
+      expect(scenario.pushCalls).toContain("child");
+    }).pipe(Effect.provide(scenario.layer));
+  });
+
+  it.effect("bare sync fetches origin in dry-run", () => {
+    const seen: Array<string> = [];
+    const layer = stackTestLayer({
+      current: "stack-a",
+      refs: [ref("dev", "dev-1"), ref("stack-a", "a-1")],
+      pulls: [pr(1, "stack-a", "dev")],
+      bases: bases(["stack-a", "dev", "dev-1"]),
+      state: stackState([stackLink({ branch: "stack-a", parent: "dev", anchor: "dev-1", pr: 1 })]),
+      service: {
+        fetch: () => Effect.sync(() => void seen.push("fetch")),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync();
+      expect(seen).toContain("fetch");
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("status flags missing parents after branch deletion", () =>
     Effect.gen(function* () {
       const stack = yield* Stack;
@@ -3521,7 +3745,9 @@ describe("Stack", () => {
       expect(items).toContain("Sync preview");
       expect(items).toContain("└─ ◌ stack-b #5 would rebase onto dev");
       expect(items).toContain("   └─ ◌ stack-c #3 would rebase onto stack-b");
-      expect(test.seen).toEqual([]);
+      // Dry-run refreshes remote-tracking refs (a read refresh) but performs no
+      // branch/request/metadata mutation.
+      expect(test.seen).toEqual(["fetch"]);
       expect(state.links.find((item) => item.branch === "stack-b")?.parent).toBe("stack-a");
       expect(undo).toBeNull();
     }).pipe(Effect.provide(test.layer));

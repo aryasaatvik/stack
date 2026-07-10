@@ -27,6 +27,11 @@ export type StackResultItem =
       readonly to: string;
     }
   | {
+      readonly _tag: "FastForward";
+      readonly mode: Mode;
+      readonly branch: string;
+    }
+  | {
       readonly _tag: "Backup";
       readonly mode: Mode;
       readonly branch: string;
@@ -87,6 +92,8 @@ export const render = (
       return `${prefix(item.mode)}update link: ${item.branch} ${item.from} -> ${item.to} @ ${item.anchor}`;
     case "Reparent":
       return `${prefix(item.mode)}reparent ${item.branch}: ${item.from} -> ${item.to}`;
+    case "FastForward":
+      return `${prefix(item.mode)}fast-forward ${item.branch} to origin/${item.branch}`;
     case "Backup":
       return `${prefix(item.mode)}backup ${item.branch} -> ${item.backup}`;
     case "Rebase":
