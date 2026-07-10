@@ -2962,7 +2962,13 @@ describe("Stack", () => {
       expect(items).toContain("Would update PRs: #17544, #17601");
       expect(state.links).toEqual([]);
       expect(undo).toBeNull();
-      expect(events).toEqual([]);
+      // Cold-start reads stay non-mutating but still emit coarse, stderr-only status
+      // lines so a dry-run sync isn't silent during the expensive PR-list/inspect reads.
+      expect(events.map((event) => Progress.render(event))).toEqual([
+        "… reading open changes…",
+        "… inspecting 2 branches…",
+      ]);
+      expect(events.every((event) => event.stream === "stderr")).toBe(true);
     }).pipe(Effect.provide(layer));
   });
 
@@ -5639,6 +5645,8 @@ describe("Stack", () => {
       yield* stack.land("stack-a", { auto: true });
 
       expect(events.map((event) => Progress.render(event))).toEqual([
+        "… reading open changes…",
+        "… inspecting 3 branches…",
         "→ switch to dev",
         expect.stringMatching(/^→ backup stack-a -> backup\/landed-/),
         "→ retarget #5 (stack-b) to dev before merge",
@@ -5654,6 +5662,11 @@ describe("Stack", () => {
         "→ update #5 stack block",
         "→ update #3 stack block",
       ]);
+
+      // Cold-start reads are coarse (reading, then inspecting) and route to stderr;
+      // everything else keeps today's stdout stream.
+      expect(events.slice(0, 2).every((event) => event.stream === "stderr")).toBe(true);
+      expect(events.slice(2).every((event) => event.stream === undefined)).toBe(true);
     }).pipe(Effect.provide(test.layer));
   });
 

@@ -134,6 +134,7 @@ ${note}`;
       const heartbeat = (message: string) =>
         progress.emit({ _tag: "Wait", message, stream: "stderr" });
       const formatElapsed = (elapsedMillis: number) => `${Math.round(elapsedMillis / 1000)}s`;
+      const branchesLabel = (count: number) => `${count} branch${count === 1 ? "" : "es"}`;
       const mergeFailure = (err: unknown) =>
         new StackOperationError(
           `${err instanceof Error ? err.message : String(err)}\n\n` +
@@ -1407,6 +1408,7 @@ ${note}`;
             // refresh, not a mutation, and reconciliation/drift detection below
             // must see origin's real tips so previews match what apply would do.
             yield* git.fetch();
+            yield* heartbeat("reading open changes…");
             const [state, refs, pulls] = yield* Effect.all([
               store.read(),
               git.refs(),
@@ -1552,6 +1554,9 @@ ${note}`;
                 scopedState,
                 scopedPulls,
               );
+              yield* heartbeat(
+                `inspecting ${branchesLabel(scope ? scope.branches.size : planned.links.length)}…`,
+              );
               const result = yield* repairAndRender({
                 planned,
                 initialActions,
@@ -1565,6 +1570,8 @@ ${note}`;
             // --all: reconcile and infer across the whole repo, then repair every
             // stack (optionally continuing past per-stack failures).
             const { planned, initialActions, replayAnchors } = yield* reconcilePlan(state, pulls);
+
+            yield* heartbeat(`inspecting ${branchesLabel(planned.links.length)}…`);
 
             if (!continueOnFailure) {
               const result = yield* repairAndRender({
@@ -1984,6 +1991,7 @@ ${note}`;
             }
             const active = apply || auto;
 
+            yield* heartbeat("reading open changes…");
             const { state, refs, pulls, current, target } = yield* landTarget(branch);
             const link = state.links.find((item) => item.branch === target) ?? null;
             if (!link) {
@@ -2120,6 +2128,7 @@ ${note}`;
               scopedState.links.filter((item) => item.branch !== target),
               plannedPulls,
             );
+            yield* heartbeat(`inspecting ${branchesLabel(scopedState.links.length)}…`);
             const plannedRepair = yield* repairStack(
               scopedState,
               refs.filter((item) => item.name !== target),
