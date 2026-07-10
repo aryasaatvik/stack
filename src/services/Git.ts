@@ -427,12 +427,15 @@ export const live = Layer.effect(
 
     // Stale-ownership resilience: a snapshot taken earlier in the run can misroute a replay if a
     // worktree grabbed or released the branch mid-run. Git reports that as "already used by
-    // worktree" from checkout/worktree-add, or "cannot force update" from `branch -f` on a branch
-    // a worktree acquired concurrently. Match git's phrases exactly — our own dirty-owner error
-    // says "checked out at" and must not trigger a wasted retry. Either way: drop the snapshot,
+    // worktree" from checkout/worktree-add, or "Cannot force update the branch" (capitalization
+    // varies across git versions) from `branch -f` on a branch a worktree acquired concurrently.
+    // Match git's phrases case-insensitively — but never our own dirty-owner error, which says
+    // "checked out at" and must not trigger a wasted retry. Either way: drop the snapshot,
     // recompute ownership, retry exactly once.
-    const staleOwnership = (stderr: string) =>
-      stderr.includes("already used by worktree") || stderr.includes("cannot force update");
+    const staleOwnership = (stderr: string) => {
+      const text = stderr.toLowerCase();
+      return text.includes("already used by worktree") || text.includes("cannot force update");
+    };
     const replay = Effect.fn("Git.replay")(function* (
       branch: string,
       parent: string,

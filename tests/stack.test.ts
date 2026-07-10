@@ -1534,7 +1534,7 @@ describe("Git", () => {
                     "git",
                     args,
                     128,
-                    "fatal: cannot force update the branch 'stack-b' which is checked out at '/x'",
+                    "fatal: Cannot force update the branch 'stack-b' which is checked out at '/x'",
                   ),
                 );
               }
