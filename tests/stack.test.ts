@@ -1514,6 +1514,45 @@ describe("Git", () => {
     }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
   });
 
+  it.effect("replay retries once when branch -f loses a concurrent-checkout race", () => {
+    let worktreeListCount = 0;
+    let forceAttempts = 0;
+    const proc = Layer.succeed(
+      Proc.Service,
+      Proc.Service.of({
+        exec: (_cwd, _tool, args) =>
+          Effect.gen(function* () {
+            if (args[0] === "worktree" && args[1] === "list") {
+              worktreeListCount += 1;
+              return "";
+            }
+            if (args[0] === "branch" && args[1] === "-f") {
+              forceAttempts += 1;
+              if (forceAttempts === 1) {
+                return yield* Effect.fail(
+                  new ExecError(
+                    "git",
+                    args,
+                    128,
+                    "fatal: cannot force update the branch 'stack-b' which is checked out at '/x'",
+                  ),
+                );
+              }
+            }
+            return "";
+          }),
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const git = yield* Git.Service;
+      yield* git.replay("stack-b", "dev", ["b1"]);
+
+      expect(worktreeListCount).toBe(2);
+      expect(forceAttempts).toBe(2);
+    }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
+  });
+
   it.effect(
     "replay updates a checked-out branch from its owning clean worktree",
     () =>

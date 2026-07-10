@@ -365,7 +365,13 @@ export const live = Layer.effect(
         .makeTempDirectory({ prefix: "stack-replay-" })
         .pipe(
           Effect.mapError(
-            (err) => new ExecError("git", ["worktree", "add", branch], 1, String(err)),
+            (err) =>
+              new ExecError(
+                "mktemp",
+                ["stack-replay-"],
+                1,
+                `temp directory failed: ${String(err)}`,
+              ),
           ),
         );
       const abortCherryPick = runAt(tmp, "git", ["cherry-pick", "--abort"], [0, 1, 128]).pipe(
@@ -420,8 +426,12 @@ export const live = Layer.effect(
     });
 
     // Stale-ownership resilience: a snapshot taken earlier in the run can misroute a replay if a
-    // worktree grabbed or released the branch mid-run. When git reports the branch is already used
-    // by another worktree, drop the snapshot, recompute ownership, and retry exactly once.
+    // worktree grabbed or released the branch mid-run. Git reports that as "already used by
+    // worktree" from checkout/worktree-add, or "checked out at" from `branch -f` on a branch a
+    // worktree acquired concurrently. Either way: drop the snapshot, recompute ownership, retry
+    // exactly once.
+    const staleOwnership = (stderr: string) =>
+      stderr.includes("already used by worktree") || stderr.includes("checked out at");
     const replay = Effect.fn("Git.replay")(function* (
       branch: string,
       parent: string,
@@ -429,7 +439,7 @@ export const live = Layer.effect(
     ) {
       return yield* replayOnce(branch, parent, commits).pipe(
         Effect.catchTag("ExecError", (err) =>
-          err.stderr.includes("already used by worktree")
+          staleOwnership(err.stderr)
             ? Effect.sync(invalidateWorktrees).pipe(
                 Effect.flatMap(() => replayOnce(branch, parent, commits)),
               )
