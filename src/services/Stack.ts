@@ -980,6 +980,10 @@ ${note}`;
             //                            exactly the retry-after-failed-push recovery.
             const reconcile = Effect.fn("Stack.repairStack.reconcile")(function* () {
               const members = new Set(state.links.map((link) => String(link.branch)));
+              // Value = isMember. Every branch in state.links is inserted with `true`
+              // before any child link can add it as a parent-only target, so the
+              // `!targets.has(parent)` guard never downgrades a member to a
+              // parent-only `false` entry — parents already seen keep their flag.
               const targets = new Map<string, boolean>();
               for (const link of state.links) {
                 const branch = String(link.branch);
@@ -999,7 +1003,12 @@ ${note}`;
                 const remote = remoteRef.value;
                 if (local === remote) continue;
 
-                if (yield* git.ancestor(local, remote)) {
+                // One merge-base call classifies behind/ahead/diverged: mb == local
+                // means local is strictly behind origin, mb == remote means local is
+                // strictly ahead, anything else is a divergence.
+                const mergeBase = yield* git.base(local, remote);
+                const mb = Option.isSome(mergeBase) ? mergeBase.value : null;
+                if (mb === local) {
                   reconciledTips.set(branch, remote);
                   actions.push({ _tag: "FastForward", mode, branch });
                   if (apply) yield* git.fastForward(branch);
@@ -1008,7 +1017,7 @@ ${note}`;
                   live.set(branch, branchRef({ name: branch, head: remote }));
                   continue;
                 }
-                if (yield* git.ancestor(remote, local)) continue;
+                if (mb === remote) continue;
 
                 // Diverged. Repair owns in-scope members; a read-only parent is fatal.
                 if (isMember) continue;

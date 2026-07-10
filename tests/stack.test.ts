@@ -3242,6 +3242,7 @@ describe("Stack", () => {
     const ffCalls: Array<string> = [];
     const rebaseCalls: Array<string> = [];
     const pushCalls: Array<string> = [];
+    const commitsCalls: Array<string> = [];
     const heads = new Map<string, string>([
       ["dev", "dev-1"],
       ["origin/dev", "dev-1"],
@@ -3266,12 +3267,24 @@ describe("Stack", () => {
           Effect.sync(() => {
             ffCalls.push(String(branch));
             events.push(`ff ${branch}`);
+            const origin = heads.get(`origin/${String(branch)}`);
+            if (origin) heads.set(String(branch), origin);
+          }),
+        commits: (from, branch) =>
+          Effect.sync(() => {
+            commitsCalls.push(`${from}..${branch}`);
+            return [`${branch}-commit`];
           }),
         base: (branch, parent) =>
           Effect.sync(() => {
+            // Branch-name pairs used by drift detection / replay-range selection.
             if (branch === "child" && parent === "parent") return Option.some(opts.childBase);
             if (branch === "parent" && (parent === "origin/dev" || parent === "dev"))
               return Option.some("dev-1");
+            // SHA pairs from reconcile's single merge-base classification: the
+            // ancestor of the pair is the merge base; unrelated pairs diverge.
+            if (anc.has(`${branch}<${parent}`)) return Option.some(String(branch));
+            if (anc.has(`${parent}<${branch}`)) return Option.some(String(parent));
             return Option.none();
           }),
         replay: (branch, parent) =>
@@ -3286,7 +3299,7 @@ describe("Stack", () => {
           }),
       },
     });
-    return { layer, events, ffCalls, rebaseCalls, pushCalls };
+    return { layer, events, ffCalls, rebaseCalls, pushCalls, commitsCalls };
   };
 
   it.effect("sync <child> --apply fast-forwards a stale parent and rebases the child", () => {
@@ -3386,6 +3399,9 @@ describe("Stack", () => {
       expect(scenario.events.indexOf("ff child")).toBeLessThan(
         scenario.events.indexOf("rebase child parent"),
       );
+      // Commit selection runs against the child's merge base with the parent
+      // (invariant under the child's own fast-forward), not a stale tip.
+      expect(scenario.commitsCalls).toContain("p-0..child");
     }).pipe(Effect.provide(scenario.layer));
   });
 
