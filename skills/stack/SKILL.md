@@ -142,6 +142,9 @@ The current change is bold with `👈 current`. GitHub uses `#123`; GitLab uses
   code host and repairs after the root lands).
 - Never mutate trunk branches (`dev`, `main`, `master`, or any configured trunk).
 - Before rebasing, the tool creates a local backup branch.
+- Repairs run in a branch's owning worktree or an isolated ephemeral worktree;
+  the primary checkout is never used as a workbench, so an unrelated dirty
+  primary checkout never blocks a run.
 - Clean sibling worktrees can own branches being repaired or cleaned up; dirty
   sibling owners fail before mutation.
 - If a replay fails, the tool aborts the cherry-pick, restores the original
