@@ -86,8 +86,15 @@ work. Repeat after any parent branch changes or a squash merge lands.
   descendants.
 - `stack merge --auto` — retarget children, enable code-host auto-merge, wait,
   then repair descendants.
-- `stack merge --auto --through <branch-or-change>` — repeat auto-merge one root
-  at a time until the target lands.
+- `stack merge --auto --through <branch-or-change>` — land a chain of roots one at
+  a time until the target lands. Repair is lazy: after each landing only the next
+  root is rebased+pushed (grandchildren and siblings wait their turn), and one
+  final repair pass freshens whatever is still open at the end. This avoids
+  force-pushing every open change after every merge (which re-triggers review
+  bots). Add `--eager` to repair the whole remaining chain after every landing.
+- `stack merge --continue` — resume a `--through` campaign that stopped on a
+  replay conflict. Trusts the recorded landed roots and picks up from the next
+  root; combine it with neither a branch argument nor `--through`.
 - `stack history` — show the most recent applied repair journal.
 - `stack undo` — dry-run restore of the last applied mutation.
 - `stack undo --apply` — restore branch tips, change targets, and stack metadata.
@@ -125,6 +132,9 @@ The current change is bold with `👈 current`. GitHub uses `#123`; GitLab uses
   sibling owners fail before mutation.
 - If a replay fails, the tool aborts the cherry-pick, restores the original
   branch, keeps backups and the undo journal, and tells you which branch to
-  repair before running `stack sync --apply` again.
+  repair. During a `--through` campaign it also saves campaign state pointing at
+  the failed root: fix and push that branch, then run `stack merge --continue`
+  to resume the remaining landings instead of re-running the whole command.
+  Outside a campaign, repair the branch and run `stack sync --apply` again.
 - If output is unclear, inspect with `stack status`, `stack history`, or command
   help before applying.
