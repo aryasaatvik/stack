@@ -5207,6 +5207,29 @@ describe("Stack", () => {
     }).pipe(Effect.provide(test.layer));
   });
 
+  it.effect("replay conflict hint spells out the surgical manual recipe", () => {
+    const test = makeLand([], "stack-a", null, {
+      replay: (branch: string, parent: string) =>
+        branch === "stack-c"
+          ? Effect.fail(new ReplayConflictError("stack-c", parent, ["bun.lock"], "conflict"))
+          : Effect.void,
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const error = yield* Effect.flip(stack.land(undefined, { auto: true, through: "3" }));
+      const text = String(error);
+
+      // The hint names the run's backup ref, freshly fetched refs, the surgical
+      // --onto range, and force-with-lease.
+      expect(text).toContain("backup/stack-sync");
+      expect(text).toContain("git fetch origin");
+      expect(text).toContain("git rebase --onto");
+      expect(text).toContain("--force-with-lease origin stack-c");
+      expect(text).toContain("stack merge --continue");
+    }).pipe(Effect.provide(test.layer));
+  });
+
   it.effect("land can force merge with admin privileges", () => {
     const test = makeLand();
 

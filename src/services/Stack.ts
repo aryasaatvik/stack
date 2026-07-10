@@ -151,6 +151,11 @@ ${note}`;
         state: ReturnType<typeof stackState>,
         pulls: ReadonlyArray<PullRef>,
         actions: ReadonlyArray<StackResult.StackResultItem>,
+        // The pre-rewrite parent tip this run computed the replay range from
+        // (persisted anchor or the parent's own backup ref) — the surgical range
+        // base for a manual `git rebase --onto`, so only the branch's own commits
+        // replay instead of the wide merge-base range that conflicted.
+        rangeBase: string,
       ) =>
         new StackOperationError(
           [
@@ -176,8 +181,13 @@ ${note}`;
             "  the temporary replay branch was deleted",
             "  the undo journal was saved",
             "",
-            "Next:",
-            `  repair ${rebase.branch} from ${rebase.backup}, push it, then run: stack sync --apply`,
+            "Next: replay only this branch's own commits onto the new parent, against freshly fetched refs",
+            "  1. git fetch origin",
+            `  2. git rebase --onto ${rebase.parent} ${rangeBase} ${rebase.branch}`,
+            "  3. resolve conflicts, then: git rebase --continue",
+            `  4. git push --force-with-lease origin ${rebase.branch}`,
+            `  5. stack merge --continue   (campaigns)  /  stack sync --apply ${rebase.branch}`,
+            `  ${rangeBase} is the pre-rewrite parent tip this run backed up — the range base that replays only ${rebase.branch}'s commits. Always rebase onto fresh origin refs, never a stale local trunk.`,
             "  or restore the pre-sync state with: stack undo --apply",
             "",
             "Git error:",
@@ -1205,7 +1215,8 @@ ${note}`;
                     git,
                     checkpoint,
                     step,
-                    onReplayFailure: (err) => replayFailure(rebase, err, state, pulls, actions),
+                    onReplayFailure: (err) =>
+                      replayFailure(rebase, err, state, pulls, actions, anchor ?? from),
                   });
                   saved.set(rebase.branch, rebase.backup);
                   const tip = yield* git.head(link.branch);
