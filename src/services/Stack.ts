@@ -277,11 +277,37 @@ ${note}`;
           return { icon: "●", note: "" };
         };
 
+        // Anchor the tree at each in-scope branch whose parent is out of scope: a
+        // trunk, or (under subtree scoping) an ancestor left read-only. The parent
+        // is shown only as context; the walk descends into the scoped subtree.
+        const inScope = new Set(opts.state.links.map((link) => String(link.branch)));
+        const parentOf = (branch: string) => String(links.get(branch)?.parent ?? "");
+        const tops = [...inScope]
+          .filter((branch) => !inScope.has(parentOf(branch)))
+          .sort((a, b) => a.localeCompare(b));
+        const anchors = new Map<string, Array<string>>();
+        for (const top of tops) {
+          const list = anchors.get(parentOf(top)) ?? [];
+          list.push(top);
+          anchors.set(parentOf(top), list);
+        }
+        // Render anchor groups in trunk config order first, then remaining
+        // parents alphabetically, so multi-trunk output follows stack.trunks.
+        const anchorRank = (parent: string) => {
+          const index = trunkNames.indexOf(parent);
+          return index >= 0 ? index : trunkNames.length;
+        };
+        const orderedAnchors = [...anchors.entries()].sort(
+          ([a], [b]) => anchorRank(a) - anchorRank(b) || a.localeCompare(b),
+        );
         const trunkName =
           trunkNames.find((name) => (children.get(name) ?? []).length > 0) ??
           trunkNames[0] ??
           "main";
-        const lines = [opts.title, "", `● ${trunkName}`];
+        const lines =
+          tops.length === 0
+            ? [opts.title, "", `● ${trunkName}`, "└─ ◌ stack is current"]
+            : [opts.title, ""];
         const walk = (branch: string, prefix: string, last: boolean) => {
           const item = status(branch);
           lines.push(
@@ -292,9 +318,10 @@ ${note}`;
             walk(child, `${prefix}${last ? "   " : "│  "}`, index === kids.length - 1),
           );
         };
-        const roots = trunkNames.flatMap((name) => children.get(name) ?? []);
-        roots.forEach((root, index) => walk(root, "", index === roots.length - 1));
-        if (roots.length === 0) lines.push("└─ ◌ stack is current");
+        for (const [parent, groupTops] of orderedAnchors) {
+          lines.push(`● ${parent}`);
+          groupTops.forEach((top, index) => walk(top, "", index === groupTops.length - 1));
+        }
 
         const summary = new Array<string>();
         if (created.size > 0) {
@@ -1291,6 +1318,10 @@ ${note}`;
                 readonly root: string;
                 readonly branches: ReadonlySet<string>;
               } | null;
+              // Whole-stack member set for the read-only stack-block body refresh.
+              // Branch mutations stay within `target.branches`; PR bodies may span
+              // the stack so sibling/ancestor widgets keep correct topology.
+              readonly bodyScope?: ReadonlySet<string>;
               readonly preserveUndo?: boolean;
             }) =>
               Effect.gen(function* () {
@@ -1317,11 +1348,15 @@ ${note}`;
                 const changedOpenPulls = repair.actions.some(
                   (action) => action._tag === "RetargetPull" || action._tag === "CreatePull",
                 );
-                const notesPulls = yield* changesForLinks(
-                  repair.state.links,
-                  !dryRun && changedOpenPulls ? yield* codeHost.changes() : pulls,
-                );
-                const notes = yield* linksFor(repair.state, !dryRun, new Set(), notesPulls);
+                const freshPulls = !dryRun && changedOpenPulls ? yield* codeHost.changes() : pulls;
+                // Body refresh spans the whole stack when a subtree was scoped, so
+                // ancestor and sibling widgets re-render with the current topology.
+                const bodyState =
+                  opts.bodyScope && target
+                    ? filterState(mergeState(state, target.branches, repair.state), opts.bodyScope)
+                    : repair.state;
+                const notesPulls = yield* changesForLinks(bodyState.links, freshPulls);
+                const notes = yield* linksFor(bodyState, !dryRun, new Set(), notesPulls);
                 const changed = repair.actions.length > 0 || notes.actions.length > 0;
                 const lines = !changed
                   ? renderSyncTree({
@@ -1345,23 +1380,36 @@ ${note}`;
               // Resolve scope from the cheap membership graph before any
               // merge-base work, then reconcile/infer/repair only that subset.
               const membership = syncMembership(state, pulls);
+              // Scope is the named branch's subtree (branch + descendants), not the
+              // whole stack: ancestors stay read-only rebase targets so a lower-branch
+              // fix never moves the root or sibling subtrees. `stackBranches` carries
+              // the full stack for the read-only whole-stack stack-block body refresh.
               const scope = yield* Effect.gen(function* () {
                 if (requestedBranch) {
-                  const root = membership.rootOf(requestedBranch);
-                  if (!root) {
+                  const stackRoot = membership.rootOf(requestedBranch);
+                  if (!stackRoot) {
                     return yield* Effect.fail(
                       new StackOperationError(`${requestedBranch} is not part of a tracked stack`),
                     );
                   }
-                  return { root, branches: membership.scopeBranches(root) };
+                  return {
+                    root: requestedBranch,
+                    branches: membership.scopeBranches(requestedBranch),
+                    stackBranches: membership.scopeBranches(stackRoot),
+                  };
                 }
                 const currentRoot = membership.rootOf(current);
                 if (currentRoot) {
-                  return { root: currentRoot, branches: membership.scopeBranches(currentRoot) };
+                  return {
+                    root: current,
+                    branches: membership.scopeBranches(current),
+                    stackBranches: membership.scopeBranches(currentRoot),
+                  };
                 }
                 const roots = membership.roots;
                 if (roots.length === 1) {
-                  return { root: roots[0]!, branches: membership.scopeBranches(roots[0]!) };
+                  const branches = membership.scopeBranches(roots[0]!);
+                  return { root: roots[0]!, branches, stackBranches: branches };
                 }
                 if (roots.length === 0) return null;
                 return yield* Effect.fail(
@@ -1369,7 +1417,7 @@ ${note}`;
                     [
                       `off-stack: ${roots.length} stacks found`,
                       ...roots.map((root) => `  ${root}`),
-                      "run: stack sync <branch> to sync one stack",
+                      "run: stack sync <branch> to sync that branch and its descendants",
                       "or: stack sync --all to sync every stack",
                     ].join("\n"),
                   ),
@@ -1388,7 +1436,8 @@ ${note}`;
                 planned,
                 initialActions,
                 replayAnchors,
-                target: scope,
+                target: scope ? { root: scope.root, branches: scope.branches } : null,
+                ...(scope ? { bodyScope: scope.stackBranches } : {}),
               });
               return result.lines;
             }

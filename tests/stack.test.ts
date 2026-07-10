@@ -693,7 +693,7 @@ Footer
           refs: () => Effect.succeed(Array.from(refs.values())),
           changes: () => Effect.succeed(pulls),
           change: (pr: number) => Effect.succeed(metas.get(pr)!),
-          current: () => Effect.succeed("stack-c"),
+          current: () => Effect.succeed("stack-b"),
           switch: (branch: string) => Effect.sync(() => void seen.push(`switch ${branch}`)),
           head: (name: string) =>
             Effect.succeed(
@@ -1117,7 +1117,7 @@ const makeSyncNovel = () => {
                 labels: [new PullLabel({ name: "beta" })],
               }),
             ),
-          current: () => Effect.succeed("stack-c"),
+          current: () => Effect.succeed("stack-b"),
           switch: () => Effect.void,
           head: (name: string) =>
             Effect.succeed(
@@ -2277,7 +2277,9 @@ describe("Stack", () => {
         expect(message).toContain("off-stack: 2 stacks found");
         expect(message).toContain("  alpha-root");
         expect(message).toContain("  beta-root");
-        expect(message).toContain("run: stack sync <branch> to sync one stack");
+        expect(message).toContain(
+          "run: stack sync <branch> to sync that branch and its descendants",
+        );
         expect(message).toContain("or: stack sync --all to sync every stack");
         // standalone trunk-root PRs are not roots and never appear in the listing
         expect(message).not.toContain("loner");
@@ -2476,7 +2478,7 @@ describe("Stack", () => {
       ref("effectify-format", "fff"),
     ];
     const layer = stackTestLayer({
-      current: "effectify-format",
+      current: "effectify-watcher",
       refs,
       pulls: [
         pr(1, "standalone", "dev"),
@@ -2528,7 +2530,7 @@ describe("Stack", () => {
       ref("effectify-file-watcher-service", "ccc"),
     ];
     const layer = stackTestLayer({
-      current: "effectify-file-watcher-service",
+      current: "effectify-watcher",
       refs,
       pulls: [
         pr(17544, "effectify-watcher", "dev"),
@@ -2629,7 +2631,7 @@ describe("Stack", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("sync without branch scopes to the current inferred stack", () => {
+  it.effect("sync without branch scopes to the current branch subtree", () => {
     const layer = stackTestLayer({
       current: "other-child",
       refs: [
@@ -2656,11 +2658,15 @@ describe("Stack", () => {
     return Effect.gen(function* () {
       const stack = yield* Stack;
       const items = yield* stack.sync();
+      const output = items.join("\n");
 
       expect(items).toContain("Sync preview");
-      expect(items).toContain("└─ ● other-root #3");
-      expect(items).toContain("   └─ ● other-child #4");
-      expect(items.join("\n")).not.toContain("app-root");
+      // The subtree of the leaf is just the leaf; its parent anchors the tree as
+      // read-only context and is never itself a synced node.
+      expect(items).toContain("● other-root");
+      expect(items).toContain("└─ ● other-child #4");
+      expect(output).not.toContain("other-root #3");
+      expect(output).not.toContain("app-root");
     }).pipe(Effect.provide(layer));
   });
 
@@ -2747,7 +2753,7 @@ describe("Stack", () => {
 
     return Effect.gen(function* () {
       const stack = yield* Stack;
-      yield* stack.sync({ branch: "active-child", apply: true });
+      yield* stack.sync({ branch: "active-root", apply: true });
 
       expect(seen).toContain("body 3");
     }).pipe(Effect.provide(layer));
@@ -2755,7 +2761,7 @@ describe("Stack", () => {
 
   it.effect("sync previews replacement requests for missing non-terminal changes", () => {
     const layer = stackTestLayer({
-      current: "stack-c",
+      current: "stack-b",
       refs: [ref("dev", "dev-new"), ref("stack-b", "stack-b"), ref("stack-c", "stack-c")],
       pulls: [pr(3, "stack-c", "stack-b")],
       bases: bases(["stack-b", "dev", "dev-new"], ["stack-c", "stack-b", "stack-b"]),
@@ -2800,7 +2806,7 @@ describe("Stack", () => {
     return Effect.gen(function* () {
       const stack = yield* Stack;
       const store = yield* Store;
-      yield* Effect.flip(stack.sync({ branch: "active-child", apply: true }));
+      yield* Effect.flip(stack.sync({ branch: "active-root", apply: true }));
       const undo = yield* store.readUndo();
 
       const entry = undo?.entries.find((item) => item.branch === "active-root");
@@ -3023,6 +3029,197 @@ describe("Stack", () => {
 
       expect(baseCalls).not.toContain("b-root");
       expect(baseCalls).not.toContain("b-child");
+    }).pipe(Effect.provide(layer));
+  });
+
+  // Fork topology s-root -> {s-a, s-b}, s-a -> s-a1, on an advanced trunk. s-a and
+  // s-a1 have drifted; s-b is current. Records every merge-base read, push, and
+  // replay so subtree scoping can be asserted at the Git seam.
+  const forkStackLayer = (opts?: {
+    readonly current?: string;
+    readonly worktrees?: ReadonlyArray<{
+      readonly path: string;
+      readonly head: string | null;
+      readonly branch: string | null;
+      readonly dirty: ReadonlyArray<string>;
+    }>;
+  }) => {
+    const baseCalls: Array<string> = [];
+    const pushCalls: Array<string> = [];
+    const rebaseCalls: Array<string> = [];
+    const worktrees = opts?.worktrees;
+    const baseMap = new Map(
+      Object.entries(
+        bases(
+          ["s-root", "dev", "dev-1"],
+          ["s-a", "s-root", "root-old"],
+          ["s-b", "s-root", "root-1"],
+          ["s-a1", "s-a", "a-old"],
+        ),
+      ),
+    );
+    const layer = stackTestLayer({
+      current: opts?.current ?? "dev",
+      refs: [
+        ref("dev", "dev-2"),
+        ref("s-root", "root-1"),
+        ref("s-a", "a-1"),
+        ref("s-b", "b-1"),
+        ref("s-a1", "a1-1"),
+      ],
+      pulls: [
+        pr(1, "s-root", "dev"),
+        pr(2, "s-a", "s-root"),
+        pr(3, "s-b", "s-root"),
+        pr(4, "s-a1", "s-a"),
+      ],
+      state: stackState([
+        stackLink({ branch: "s-root", parent: "dev", anchor: "dev-1", pr: 1 }),
+        stackLink({ branch: "s-a", parent: "s-root", anchor: "root-old", pr: 2 }),
+        stackLink({ branch: "s-b", parent: "s-root", anchor: "root-1", pr: 3 }),
+        stackLink({ branch: "s-a1", parent: "s-a", anchor: "a-old", pr: 4 }),
+      ]),
+      service: {
+        base: (branch, parent) =>
+          Effect.sync(() => {
+            baseCalls.push(String(branch));
+            return Option.fromNullishOr(baseMap.get(`${branch}:${parent}`));
+          }),
+        push: (branch) => Effect.sync(() => void pushCalls.push(String(branch))),
+        replay: (branch, parent) => Effect.sync(() => void rebaseCalls.push(`${branch} ${parent}`)),
+        ...(worktrees ? { worktrees: () => Effect.succeed(worktrees) } : {}),
+      },
+    });
+    return { layer, baseCalls, pushCalls, rebaseCalls };
+  };
+
+  it.effect("sync <branch> repairs only the branch subtree, never a sibling", () => {
+    const fork = forkStackLayer({
+      worktrees: [{ path: "/wt/s-b", head: "b-1", branch: "s-b", dirty: ["M sibling.txt"] }],
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const preview = (yield* stack.sync({ branch: "s-a" })).join("\n");
+      expect(preview).toContain("would rebase onto s-root");
+      expect(preview).toContain("s-a1");
+      expect(preview).not.toContain("s-b");
+
+      // A dirty worktree on the out-of-scope sibling must not block the apply.
+      const applied = (yield* stack.sync({ branch: "s-a", apply: true })).join("\n");
+      expect(applied).toContain("Synced stack");
+      expect(applied).not.toContain("s-b");
+
+      // Reads and mutations stay within the s-a subtree.
+      expect(fork.baseCalls).toContain("s-a");
+      expect(fork.baseCalls).toContain("s-a1");
+      expect(fork.baseCalls).not.toContain("s-b");
+      expect(fork.baseCalls).not.toContain("s-root");
+      expect(fork.rebaseCalls.some((call) => call.startsWith("s-a "))).toBe(true);
+      expect(fork.rebaseCalls.some((call) => call.startsWith("s-b "))).toBe(false);
+      expect(fork.pushCalls).toContain("s-a");
+      expect(fork.pushCalls).not.toContain("s-b");
+      expect(fork.pushCalls).not.toContain("s-root");
+    }).pipe(Effect.provide(fork.layer));
+  });
+
+  it.effect("sync <root> repairs the whole stack including trunk-chase", () => {
+    const fork = forkStackLayer();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const preview = (yield* stack.sync({ branch: "s-root" })).join("\n");
+
+      expect(preview).toContain("s-root");
+      expect(preview).toContain("s-a");
+      expect(preview).toContain("s-b");
+      expect(preview).toContain("s-a1");
+      // Naming the root keeps today's trunk-chase: root rebases onto the trunk.
+      expect(preview).toContain("would rebase onto dev");
+      expect(fork.baseCalls).toContain("s-root");
+      expect(fork.baseCalls).toContain("s-b");
+    }).pipe(Effect.provide(fork.layer));
+  });
+
+  it.effect("sync <leaf> repairs only the leaf", () => {
+    const fork = forkStackLayer();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const preview = (yield* stack.sync({ branch: "s-a1" })).join("\n");
+
+      expect(preview).toContain("s-a1");
+      expect(fork.baseCalls).toContain("s-a1");
+      expect(fork.baseCalls).not.toContain("s-a");
+      expect(fork.baseCalls).not.toContain("s-b");
+      expect(fork.baseCalls).not.toContain("s-root");
+    }).pipe(Effect.provide(fork.layer));
+  });
+
+  it.effect("bare sync scopes to the current branch subtree", () => {
+    const fork = forkStackLayer({ current: "s-a" });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const preview = (yield* stack.sync()).join("\n");
+
+      expect(preview).toContain("s-a1");
+      expect(preview).not.toContain("s-b");
+      expect(fork.baseCalls).toContain("s-a");
+      expect(fork.baseCalls).toContain("s-a1");
+      expect(fork.baseCalls).not.toContain("s-b");
+      expect(fork.baseCalls).not.toContain("s-root");
+    }).pipe(Effect.provide(fork.layer));
+  });
+
+  it.effect("sync <new-child> stacks it without moving a stale root", () => {
+    const baseCalls: Array<string> = [];
+    const baseMap = new Map(
+      Object.entries(
+        bases(
+          ["c-root", "dev", "dev-1"],
+          ["c-mid", "c-root", "root-1"],
+          ["c-new", "c-mid", "mid-old"],
+        ),
+      ),
+    );
+    const layer = stackTestLayer({
+      current: "dev",
+      refs: [
+        ref("dev", "dev-2"),
+        ref("c-root", "root-1"),
+        ref("c-mid", "mid-1"),
+        ref("c-new", "new-1"),
+      ],
+      pulls: [pr(1, "c-root", "dev"), pr(2, "c-mid", "c-root"), pr(3, "c-new", "c-mid")],
+      state: stackState([
+        stackLink({ branch: "c-root", parent: "dev", anchor: "dev-1", pr: 1 }),
+        stackLink({ branch: "c-mid", parent: "c-root", anchor: "root-1", pr: 2 }),
+      ]),
+      service: {
+        base: (branch, parent) =>
+          Effect.sync(() => {
+            baseCalls.push(String(branch));
+            return Option.fromNullishOr(baseMap.get(`${branch}:${parent}`));
+          }),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      yield* stack.sync({ branch: "c-new", apply: true });
+      const state = yield* store.read();
+
+      // Only the new child is inspected/repaired; the stale root is not chased.
+      expect(baseCalls).toContain("c-new");
+      expect(baseCalls).not.toContain("c-root");
+      expect(baseCalls).not.toContain("c-mid");
+      const root = state.links.find((link) => String(link.branch) === "c-root");
+      expect(String(root?.parent)).toBe("dev");
+      expect(String(root?.anchor)).toBe("dev-1");
+      const created = state.links.find((link) => String(link.branch) === "c-new");
+      expect(String(created?.parent)).toBe("c-mid");
     }).pipe(Effect.provide(layer));
   });
 
@@ -4694,7 +4891,7 @@ describe("Stack", () => {
             refs: () => Effect.succeed(Array.from(refs.values())),
             changes: () => Effect.succeed(pulls),
             change: (pr: number) => Effect.succeed(metas.get(pr)!),
-            current: () => Effect.succeed("stack-b"),
+            current: () => Effect.succeed("stack-a"),
             head: (name: string) =>
               Effect.succeed(
                 Option.fromNullishOr(
@@ -4790,7 +4987,7 @@ describe("Stack", () => {
       const result = yield* Effect.gen(function* () {
         const stack = yield* Stack;
         const store = yield* Store;
-        const items = yield* stack.sync({ apply: true });
+        const items = yield* stack.sync({ branch: "stack-a", apply: true });
         const state = yield* store.read();
         const undo = yield* store.readUndo();
         return { items, state, undo };
