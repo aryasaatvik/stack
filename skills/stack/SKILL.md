@@ -65,10 +65,14 @@ work. Repeat after any parent branch changes or a squash merge lands.
 - `stack track <branch> --onto <parent>` — manually record stack intent only
   when target branches don't already encode it.
 - `stack sync [branch]` — preview inferred links and repairs (non-mutating).
-  Scopes to `branch`'s stack, or the current stack when no branch is given.
-  Off-stack (trunk checkout or detached HEAD) it auto-scopes the single stack
-  when only one exists, no-ops when none exist, and otherwise lists the stack
-  roots and asks you to pick one with `sync <branch>` or `sync --all`.
+  Scopes to `branch`'s subtree — the branch plus its descendants — or the
+  current branch's subtree when no branch is given. A lower-branch fix restacks
+  only that branch's subtree; sibling subtrees never move, even if the trunk
+  advanced. Ancestors are read-only rebase targets. Use `sync <root>` or
+  `sync --all` to freshen everything, including trunk-chase.
+  Off-stack (trunk checkout or detached HEAD) it auto-scopes the single stack's
+  root when only one exists, no-ops when none exist, and otherwise lists the
+  stack roots and asks you to pick one with `sync <branch>` or `sync --all`.
 - `stack sync --apply [branch]` — infer links, remove stale links, repair
   descendants, retarget changes, refresh stack blocks, show a tree summary.
 - `stack sync --all` — sync every stack in the repository instead of one; the

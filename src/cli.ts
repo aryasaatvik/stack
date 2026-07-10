@@ -140,7 +140,7 @@ const syncCommand = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Infer stack links from code-host target branches (GitHub PRs / GitLab MRs), clean stale metadata, repair branches, retarget changes, and refresh stack links. If branch is omitted and the current branch is on a stack, sync only that stack; off-stack, sync the single stack automatically or ask you to pick one. Add --all to sync every stack in the repo. By default this is a dry run. Add --apply to mutate branches, changes, and stack metadata.",
+    "Infer stack links from code-host target branches (GitHub PRs / GitLab MRs), clean stale metadata, repair branches, retarget changes, and refresh stack links. Sync scopes to the named branch's subtree (the branch plus its descendants): a lower-branch fix restacks only that subtree, and sibling subtrees never move. Ancestors are read-only rebase targets; name the stack root to freshen the whole stack (including trunk-chase). If branch is omitted, sync uses the current branch's subtree; off-stack, sync the single stack automatically or ask you to pick one. Add --all to sync every stack in the repo. By default this is a dry run. Add --apply to mutate branches, changes, and stack metadata.",
   ),
   Command.withExamples([
     {
@@ -149,11 +149,11 @@ const syncCommand = Command.make(
     },
     {
       command: "stack sync effectify-watcher",
-      description: "Preview only the stack containing effectify-watcher",
+      description: "Preview the effectify-watcher subtree (that branch and its descendants)",
     },
     {
       command: "stack sync --apply",
-      description: "Run the common stack maintenance workflow for the current stack",
+      description: "Run the common stack maintenance workflow for the current branch's subtree",
     },
     {
       command: "stack sync --apply --all",
