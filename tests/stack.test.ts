@@ -4888,6 +4888,134 @@ describe("Stack", () => {
     }).pipe(Effect.provide(test.layer));
   });
 
+  const pushCount = (seen: ReadonlyArray<string>, branch: string) =>
+    seen.filter((item) => item === `push ${branch}`).length;
+
+  it.effect("land auto through repairs lazily, one push per descendant", () => {
+    const test = makeLand();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const done = yield* stack.land(undefined, { auto: true, through: "3" });
+
+      // dev -> stack-a -> stack-b -> stack-c, landing all three. Each descendant is
+      // rebased+pushed exactly once (only when it becomes the next root), instead of
+      // the eager 2+1 that force-pushes stack-c twice.
+      expect(done).toContain("merged through: stack-c");
+      expect(test.seen).toContain("auto 4");
+      expect(test.seen).toContain("auto 5");
+      expect(test.seen).toContain("auto 3");
+      expect(pushCount(test.seen, "stack-b")).toBe(1);
+      expect(pushCount(test.seen, "stack-c")).toBe(1);
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land auto through --eager restores full-chain repair per landing", () => {
+    const test = makeLand();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const done = yield* stack.land(undefined, { auto: true, through: "3", eager: true });
+
+      expect(done).toContain("merged through: stack-c");
+      // stack-c is repaired after both the stack-a and stack-b landings: the old churn.
+      expect(pushCount(test.seen, "stack-b")).toBe(1);
+      expect(pushCount(test.seen, "stack-c")).toBe(2);
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land auto through runs one final repair pass over an unlanded sibling", () => {
+    // fork: dev -> stack-a -> { stack-b, stack-c }. Land through stack-b only.
+    const test = makeLand([], "stack-a", null, {}, false, true);
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const done = yield* stack.land(undefined, { auto: true, through: "5" });
+
+      expect(done).toContain("merged through: stack-b");
+      expect(test.seen).toContain("auto 4");
+      expect(test.seen).toContain("auto 5");
+      // the sibling stack-c is never merged, but the final pass freshens it once.
+      expect(test.seen).not.toContain("auto 3");
+      expect(pushCount(test.seen, "stack-b")).toBe(1);
+      expect(pushCount(test.seen, "stack-c")).toBe(1);
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land auto through records the next root on conflict and resumes", () => {
+    let fixed = false;
+    const test = makeLand([], "stack-a", null, {
+      replay: (branch: string, parent: string) =>
+        branch === "stack-c" && !fixed
+          ? Effect.fail(new ReplayConflictError("stack-c", parent, ["bun.lock"], "conflict"))
+          : Effect.void,
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+
+      // stack-a and stack-b land; repairing stack-c (the next root) conflicts.
+      const error = yield* Effect.flip(stack.land(undefined, { auto: true, through: "3" }));
+      expect(String(error)).toContain("stack-c");
+
+      const campaign = yield* store.readCampaign();
+      expect(campaign?.landed.map((item) => String(item.branch))).toEqual(["stack-a", "stack-b"]);
+      expect(String(campaign?.chain[campaign.landed.length])).toBe("stack-c");
+      expect(test.seen).toContain("auto 4");
+      expect(test.seen).toContain("auto 5");
+      expect(test.seen).not.toContain("auto 3");
+      const pushedStackB = pushCount(test.seen, "stack-b");
+
+      // Operator fixes and pushes stack-c, then resumes the campaign.
+      fixed = true;
+      const done = yield* stack.land(undefined, { continue: true });
+      expect(done).toContain("merged through: stack-c");
+      expect(test.seen).toContain("auto 3");
+      // already-landed roots are not re-repaired on resume.
+      expect(pushCount(test.seen, "stack-b")).toBe(pushedStackB);
+      expect(yield* store.readCampaign()).toBeNull();
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land --continue without a saved campaign errors", () => {
+    const test = makeLand();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const error = yield* Effect.flip(stack.land(undefined, { continue: true }));
+      expect(String(error)).toContain("no saved merge campaign");
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land --continue rejects a branch argument and --through", () => {
+    const test = makeLand();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const branchError = yield* Effect.flip(stack.land("stack-a", { continue: true }));
+      expect(String(branchError)).toContain("drop the branch argument");
+      const throughError = yield* Effect.flip(
+        stack.land(undefined, { continue: true, through: "5" }),
+      );
+      expect(String(throughError)).toContain("drop --through");
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land auto through clears campaign state after completion", () => {
+    const test = makeLand();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      yield* stack.land(undefined, { auto: true, through: "3" });
+
+      expect(yield* store.readCampaign()).toBeNull();
+      const error = yield* Effect.flip(stack.land(undefined, { continue: true }));
+      expect(String(error)).toContain("no saved merge campaign");
+    }).pipe(Effect.provide(test.layer));
+  });
+
   it.effect("land auto rejects a through target outside the stack before merging", () => {
     const test = makeLand();
 

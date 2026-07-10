@@ -89,6 +89,22 @@ export class UndoState extends Schema.Class<UndoState>("UndoState")({
   actions: Schema.Array(Schema.String),
 }) {}
 
+export class CampaignLanding extends Schema.Class<CampaignLanding>("CampaignLanding")({
+  branch: BranchName,
+  pr: Schema.NullOr(PrNumber),
+  backup: Schema.NullOr(BranchName),
+}) {}
+
+export class CampaignState extends Schema.Class<CampaignState>("CampaignState")({
+  version: Schema.Literal(version),
+  at: Schema.String,
+  through: BranchName,
+  eager: Schema.Boolean,
+  chain: Schema.Array(BranchName),
+  stack: Schema.Array(BranchName),
+  landed: Schema.Array(CampaignLanding),
+}) {}
+
 export class StatusNode extends Schema.Class<StatusNode>("StatusNode")({
   branch: BranchName,
   head: Schema.String,
@@ -390,6 +406,35 @@ export const undoEntry = (value: {
     base: value.base === null ? null : branchName(value.base),
     created: value.created === null ? null : prNumber(value.created),
     ...(value.pushRemotes === undefined ? {} : { pushRemotes: Array.from(value.pushRemotes) }),
+  });
+
+export const campaignLanding = (value: {
+  branch: string;
+  pr: number | null;
+  backup: string | null;
+}) =>
+  new CampaignLanding({
+    branch: branchName(value.branch),
+    pr: value.pr === null ? null : prNumber(value.pr),
+    backup: value.backup === null ? null : branchName(value.backup),
+  });
+
+export const campaignState = (value: {
+  at: string;
+  through: string;
+  eager: boolean;
+  chain: ReadonlyArray<string>;
+  stack: ReadonlyArray<string>;
+  landed: ReadonlyArray<CampaignLanding>;
+}) =>
+  new CampaignState({
+    version,
+    at: value.at,
+    through: branchName(value.through),
+    eager: value.eager,
+    chain: value.chain.map((name) => branchName(name)),
+    stack: value.stack.map((name) => branchName(name)),
+    landed: Array.from(value.landed),
   });
 
 export const undoState = (

@@ -10,6 +10,9 @@ import {
   BranchRef,
   branchName,
   branchRef,
+  CampaignLanding,
+  campaignLanding,
+  campaignState,
   DirtyWorktreeError,
   MergeBaseError,
   PullMeta,
@@ -49,6 +52,8 @@ export interface StackService {
       readonly auto?: boolean;
       readonly admin?: boolean;
       readonly through?: string;
+      readonly eager?: boolean;
+      readonly continue?: boolean;
     },
   ) => Effect.Effect<ReadonlyArray<string>, StackError>;
   readonly sync: (opts?: {
@@ -1898,12 +1903,30 @@ ${note}`;
             readonly auto?: boolean;
             readonly admin?: boolean;
             readonly through?: string;
+            // Post-merge descendant repair scope for this landing:
+            //   undefined -> full eager repair of the whole subtree (single/final
+            //                merge, or --eager campaign landing),
+            //   a branch  -> lazy: repair only that next root, deferring the rest,
+            //   null      -> repair nothing (last chain root; the campaign's final
+            //                pass freshens whatever remains).
+            readonly repairOnly?: string | null;
+            // Called once the root has merged (after the post-merge baseline is
+            // written), before descendant repair. Campaigns use it to promote the
+            // landing into persisted campaign state so a repair conflict leaves the
+            // journal pointing at the next root for `merge --continue`.
+            readonly onLanded?: (info: {
+              readonly branch: string;
+              readonly pr: number;
+              readonly backup: string | null;
+            }) => Effect.Effect<void, StackError>;
           },
         ) =>
           Effect.gen(function* () {
             const apply = opts?.apply ?? false;
             const auto = opts?.auto ?? false;
             const admin = opts?.admin ?? false;
+            const repairOnly = opts?.repairOnly;
+            const onLanded = opts?.onLanded;
             if (apply && auto) {
               return yield* Effect.fail(
                 new StackOperationError("use either --apply or --auto, not both"),
@@ -2062,12 +2085,21 @@ ${note}`;
               repairPulls,
               { apply: false },
             );
+            // Under lazy repair only the next root (or nothing) is touched this
+            // landing, so the cleanliness gate covers just those branches; a dirty
+            // sibling worktree deferred to a later turn must not block this landing.
+            const repairCheckBranches =
+              repairOnly === undefined
+                ? plannedRepair.actions.flatMap((item) =>
+                    item._tag === "Rebase" ? [String(item.branch)] : [],
+                  )
+                : repairOnly === null
+                  ? []
+                  : [repairOnly];
             if (active) {
               yield* ensureRepairableWorktrees([
                 ...(targetOwner ? [target] : []),
-                ...plannedRepair.actions.flatMap((item) =>
-                  item._tag === "Rebase" ? [String(item.branch)] : [],
-                ),
+                ...repairCheckBranches,
               ]);
             }
             const actions = [
@@ -2083,6 +2115,22 @@ ${note}`;
               ...(auto ? [`wait for ${reference(Number(pr.number))} to merge`] : []),
             ];
 
+            // The links repairStack sees always keep the landed target (so
+            // descendants resolve their parent through it to trunk); under lazy
+            // repair only the next root's link joins it, deferring the rest.
+            const repairScopeState =
+              repairOnly === undefined
+                ? scopedState
+                : filterState(
+                    scopedState,
+                    new Set(repairOnly === null ? [target] : [target, repairOnly]),
+                  );
+            // Persist only what this landing actually repaired: the whole subtree
+            // when eager, just the next root when lazy, nothing for the last root.
+            const writeScope =
+              repairOnly === undefined
+                ? branches
+                : new Set<string>(repairOnly === null ? [] : [repairOnly]);
             const repairAfterMerge = Effect.fn("Stack.land.repairAfterMerge")(() =>
               Effect.gen(function* () {
                 yield* git.fetch();
@@ -2092,11 +2140,11 @@ ${note}`;
                   codeHost.changes(),
                 ]);
                 const repairPulls = yield* changesForLinks(
-                  scopedState.links.filter((item) => item.branch !== target),
+                  repairScopeState.links.filter((item) => item.branch !== target),
                   nextPulls,
                 );
                 const repair = yield* repairStack(
-                  scopedState,
+                  repairScopeState,
                   nextRefs.filter((item) => item.name !== target),
                   repairPulls,
                   {
@@ -2104,7 +2152,7 @@ ${note}`;
                     saved: new Map([[target, name]]),
                     journalState: nextState,
                     journalActions: retargetActions,
-                    writeState: writeScopedState(branches),
+                    writeState: writeScopedState(writeScope),
                   },
                 );
                 const repairedPulls = yield* changesForLinks(
@@ -2142,6 +2190,14 @@ ${note}`;
                 yield* codeHost.merge(pr.number, { admin }).pipe(Effect.mapError(mergeFailure));
               }
               yield* beginPostMergeRepair();
+              // Record the landing before descendant repair: a repair conflict now
+              // leaves the campaign journal pointing at the next root, not this one.
+              if (onLanded)
+                yield* onLanded({
+                  branch: target,
+                  pr: Number(pr.number),
+                  backup: hasLocalTarget ? name : null,
+                });
               if (hasLocalTarget) {
                 if (targetOwner) {
                   yield* step(`release ${target} worktree`);
@@ -2158,27 +2214,174 @@ ${note}`;
           }),
       );
 
-      const land: StackService["land"] = Effect.fn("Stack.land")((branch, opts) => {
-        const through = opts?.through;
-        if (!through) return landOne(branch, opts);
+      // One eager repair pass over whatever stays open after a campaign's landings.
+      // Lazy landings only repair the next root each turn, so unlanded siblings and
+      // grandchildren are freshened here exactly once. Landed roots were dropped
+      // from state, so filtering to the campaign's stack leaves just the remainder;
+      // an empty remainder is a no-op that preserves the last landing's undo journal.
+      const finalRepairPass = Effect.fn("Stack.land.finalRepairPass")(
+        (stackBranches: ReadonlySet<string>, landed: ReadonlySet<string>) =>
+          Effect.gen(function* () {
+            yield* git.fetch();
+            const [state, refs, pulls] = yield* Effect.all([
+              store.read(),
+              git.refs(),
+              codeHost.changes(),
+            ]);
+            const scoped = filterState(state, stackBranches);
+            if (scoped.links.length === 0) return Array<string>();
+            const scopedPulls = yield* changesForLinks(scoped.links, pulls);
+            const repair = yield* repairStack(scoped, refs, scopedPulls, {
+              apply: true,
+              journalState: state,
+              writeState: writeScopedState(stackBranches),
+              preserveUndo: true,
+            });
+            const repairedPulls = yield* changesForLinks(
+              repair.state.links,
+              yield* codeHost.changes(),
+            );
+            const notes = yield* linksFor(repair.state, true, landed, repairedPulls);
+            return [...repair.lines, ...notes.lines];
+          }),
+      );
 
-        return Effect.gen(function* () {
+      // Drive a `--through` campaign: land each chain root in order, repairing lazily
+      // (only the next root per landing) unless --eager restores full-chain repair.
+      // Campaign state is journaled at every landing boundary so `merge --continue`
+      // can resume from the recorded next root after a manual conflict fix, then
+      // cleared on success. A conflict propagates as today (abort/restore/tree) with
+      // the journal left pointing at the failed root.
+      //
+      // The campaign journal (Store.*Campaign) is independent of the undo journal
+      // (Store.*Undo): each landing rewrites undo.json with that landing's mutations,
+      // so `undo` restores the last landing while the campaign survives for
+      // `--continue`. The two never conflict — undo rolls back git/host state, the
+      // campaign only records which roots have merged — but undoing a landing does
+      // not un-record it, so re-landing an undone root means restarting the campaign.
+      const runCampaign = Effect.fn("Stack.land.runCampaign")(
+        (input: {
+          readonly through: string;
+          readonly eager: boolean;
+          readonly chain: ReadonlyArray<string>;
+          readonly stack: ReadonlyArray<string>;
+          readonly landed: ReadonlyArray<CampaignLanding>;
+        }) =>
+          Effect.gen(function* () {
+            const stamp = yield* timestamp();
+            let landed = [...input.landed];
+            const persist = () =>
+              store.writeCampaign(
+                campaignState({
+                  at: stamp,
+                  through: input.through,
+                  eager: input.eager,
+                  chain: input.chain,
+                  stack: input.stack,
+                  landed,
+                }),
+              );
+            const items = new Array<string>();
+            for (let i = landed.length; i < input.chain.length; i++) {
+              const target = input.chain[i]!;
+              const last = i === input.chain.length - 1;
+              const repairOnly = input.eager ? undefined : last ? null : input.chain[i + 1]!;
+              // Point the journal at this root before merging so a merge or pre-merge
+              // failure resumes here; onLanded advances it once the root has merged.
+              yield* persist();
+              if (items.length > 0) items.push("");
+              items.push(
+                ...(yield* landOne(target, {
+                  auto: true,
+                  ...(repairOnly === undefined ? {} : { repairOnly }),
+                  onLanded: (info) =>
+                    Effect.gen(function* () {
+                      landed = [...landed, campaignLanding(info)];
+                      yield* persist();
+                    }),
+                })),
+              );
+            }
+            if (!input.eager) {
+              const landedBranches = new Set(landed.map((item) => String(item.branch)));
+              const tail = yield* finalRepairPass(new Set(input.stack), landedBranches);
+              if (tail.length > 0) items.push("", ...tail);
+            }
+            yield* store.clearCampaign();
+            items.push(`merged through: ${input.through}`);
+            return items;
+          }),
+      );
+
+      const land: StackService["land"] = Effect.fn("Stack.land")((branch, opts) =>
+        Effect.gen(function* () {
+          if (opts?.continue) {
+            if (branch !== undefined) {
+              return yield* Effect.fail(
+                new StackOperationError(
+                  "merge --continue resumes the saved campaign; drop the branch argument",
+                ),
+              );
+            }
+            if (opts.through !== undefined) {
+              return yield* Effect.fail(
+                new StackOperationError(
+                  "merge --continue resumes the saved campaign; drop --through (the campaign owns it)",
+                ),
+              );
+            }
+            const campaign = yield* store.readCampaign();
+            if (!campaign) {
+              return yield* Effect.fail(
+                new StackOperationError(
+                  "no saved merge campaign to continue; start one with: stack merge --auto --through <branch-or-change>",
+                ),
+              );
+            }
+            // Trust the journal only once the recorded landings really merged.
+            const openHeads = new Set((yield* codeHost.changes()).map((pull) => String(pull.head)));
+            for (const item of campaign.landed) {
+              if (openHeads.has(String(item.branch))) {
+                return yield* Effect.fail(
+                  new StackOperationError(
+                    `campaign recorded ${item.branch} as landed, but its ${requestLabel} is still open; merge or resolve it before continuing`,
+                  ),
+                );
+              }
+            }
+            return yield* runCampaign({
+              through: String(campaign.through),
+              eager: campaign.eager,
+              chain: campaign.chain.map(String),
+              stack: campaign.stack.map(String),
+              landed: campaign.landed,
+            });
+          }
+
+          const through = opts?.through;
+          if (!through) {
+            return yield* landOne(branch, {
+              apply: opts?.apply ?? false,
+              auto: opts?.auto ?? false,
+              admin: opts?.admin ?? false,
+            });
+          }
+
           if (!opts?.auto) {
             return yield* Effect.fail(new StackOperationError("use --through only with --auto"));
           }
-
           const { stop, chain } = yield* throughTarget(branch, through);
-          const items = new Array<string>();
-
-          for (const target of chain) {
-            if (items.length > 0) items.push("");
-            items.push(...(yield* landOne(target, { auto: true })));
-          }
-
-          items.push(`merged through: ${stop}`);
-          return items;
-        });
-      });
+          const state = yield* store.read();
+          const stack = [...scopedBranches(state, chain[0]!)];
+          return yield* runCampaign({
+            through: stop,
+            eager: opts?.eager ?? false,
+            chain,
+            stack,
+            landed: [],
+          });
+        }),
+      );
 
       const undo = Effect.fn("Stack.undo")((apply = false) =>
         Effect.gen(function* () {
