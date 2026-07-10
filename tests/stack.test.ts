@@ -1553,6 +1553,34 @@ describe("Git", () => {
     }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
   });
 
+  it.effect("replay does not retry a dirty-owner failure", () => {
+    let worktreeListCount = 0;
+    const proc = Layer.succeed(
+      Proc.Service,
+      Proc.Service.of({
+        exec: (_cwd, _tool, args) =>
+          Effect.sync(() => {
+            if (args[0] === "worktree" && args[1] === "list") {
+              worktreeListCount += 1;
+              return "worktree /wt/stack-b\0HEAD b1\0branch refs/heads/stack-b\0";
+            }
+            if (args[0] === "status") return " M dirty.txt";
+            return "";
+          }),
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const git = yield* Git.Service;
+      const error = yield* git.replay("stack-b", "dev", ["b1"]).pipe(Effect.flip);
+
+      // The dirty-owner message says "checked out at ... with local changes" —
+      // it must fail once, not trigger the stale-ownership invalidate + retry.
+      expect(String(error.stderr)).toContain("local changes");
+      expect(worktreeListCount).toBe(1);
+    }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
+  });
+
   it.effect(
     "replay updates a checked-out branch from its owning clean worktree",
     () =>
