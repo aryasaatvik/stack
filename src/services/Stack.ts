@@ -131,6 +131,9 @@ ${note}`;
       const trunk = (name: string) => cfg.trunks.some((item) => item === name);
       const step = (message: string) => progress.emit({ _tag: "Step", message });
       const wait = (message: string) => progress.emit({ _tag: "Wait", message });
+      const heartbeat = (message: string) =>
+        progress.emit({ _tag: "Wait", message, stream: "stderr" });
+      const formatElapsed = (elapsedMillis: number) => `${Math.round(elapsedMillis / 1000)}s`;
       const mergeFailure = (err: unknown) =>
         new StackOperationError(
           `${err instanceof Error ? err.message : String(err)}\n\n` +
@@ -2225,7 +2228,11 @@ ${note}`;
                 yield* step(`enable auto-merge ${reference(Number(pr.number))} (${target})`);
                 yield* codeHost.auto(pr.number);
                 yield* wait(`waiting for ${reference(Number(pr.number))} to merge`);
-                yield* codeHost.wait(pr.number);
+                yield* codeHost.wait(pr.number, (elapsedMillis) =>
+                  heartbeat(
+                    `waiting for ${reference(Number(pr.number))} to merge (${formatElapsed(elapsedMillis)})`,
+                  ),
+                );
               } else {
                 yield* step(
                   `${admin ? "admin " : ""}merge ${reference(Number(pr.number))} (${target})`,

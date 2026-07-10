@@ -1917,6 +1917,66 @@ describe("GitHub", () => {
     );
   });
 
+  it.effect(
+    "wait backs off the poll interval up to the configured cap and heartbeats elapsed time",
+    () => {
+      const calls: Array<ReadonlyArray<string>> = [];
+      const heartbeats: Array<number> = [];
+      let views = 0;
+      const mergesOnView = 5;
+      const proc = Layer.succeed(
+        Proc.Service,
+        Proc.Service.of({
+          exec: (_cwd, tool, args) =>
+            Effect.sync(() => {
+              calls.push([tool, ...args]);
+              views += 1;
+              return JSON.stringify({
+                state: "OPEN",
+                mergedAt: views >= mergesOnView ? "2026-01-01T00:00:00Z" : null,
+              });
+            }),
+        }),
+      );
+      const cfgLayer = StackConfig.layer({
+        root: "/tmp/stack",
+        trunks: ["dev"],
+        codeHostWaitIntervalMillis: 5_000,
+        codeHostWaitMaxIntervalMillis: 30_000,
+      }).pipe(Layer.provide(NodeServices.layer));
+
+      return Effect.gen(function* () {
+        const github = yield* CodeHost.Service;
+        const fiber = yield* github
+          .wait(376, (elapsedMillis) => Effect.sync(() => void heartbeats.push(elapsedMillis)))
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        expect(calls).toHaveLength(1);
+
+        yield* TestClock.adjust("5 seconds");
+        expect(calls).toHaveLength(2);
+        expect(heartbeats).toEqual([5_000]);
+
+        yield* TestClock.adjust("10 seconds");
+        expect(calls).toHaveLength(3);
+        expect(heartbeats).toEqual([5_000, 15_000]);
+
+        yield* TestClock.adjust("20 seconds");
+        expect(calls).toHaveLength(4);
+        expect(heartbeats).toEqual([5_000, 15_000, 35_000]);
+
+        yield* TestClock.adjust("30 seconds");
+        yield* Fiber.join(fiber);
+        expect(calls).toHaveLength(5);
+        expect(heartbeats).toEqual([5_000, 15_000, 35_000, 65_000]);
+      }).pipe(
+        Effect.provide(
+          CodeHostGitHub.layer.pipe(Layer.provideMerge(cfgLayer), Layer.provideMerge(proc)),
+        ),
+      );
+    },
+  );
+
   it.effect("normalizes repository identity for fork push routing", () => {
     const proc = Layer.succeed(
       Proc.Service,
@@ -2510,6 +2570,62 @@ describe("GitLab", () => {
       ),
     );
   });
+
+  it.effect(
+    "wait backs off the poll interval up to the configured cap and heartbeats elapsed time",
+    () => {
+      const calls: Array<ReadonlyArray<string>> = [];
+      const heartbeats: Array<number> = [];
+      let views = 0;
+      const mergesOnView = 4;
+      const proc = Layer.succeed(
+        Proc.Service,
+        Proc.Service.of({
+          exec: (_cwd, tool, args) =>
+            Effect.sync(() => {
+              calls.push([tool, ...args]);
+              views += 1;
+              return JSON.stringify({
+                state: views >= mergesOnView ? "merged" : "opened",
+                merged_at: null,
+              });
+            }),
+        }),
+      );
+      const cfgLayer = StackConfig.layer({
+        root: "/tmp/stack",
+        trunks: ["main"],
+        codeHostWaitIntervalMillis: 5_000,
+        codeHostWaitMaxIntervalMillis: 30_000,
+      }).pipe(Layer.provide(NodeServices.layer));
+
+      return Effect.gen(function* () {
+        const gitlab = yield* CodeHost.Service;
+        const fiber = yield* gitlab
+          .wait(7, (elapsedMillis) => Effect.sync(() => void heartbeats.push(elapsedMillis)))
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        yield* Effect.yieldNow;
+        expect(calls).toHaveLength(1);
+
+        yield* TestClock.adjust("5 seconds");
+        expect(calls).toHaveLength(2);
+        expect(heartbeats).toEqual([5_000]);
+
+        yield* TestClock.adjust("10 seconds");
+        expect(calls).toHaveLength(3);
+        expect(heartbeats).toEqual([5_000, 15_000]);
+
+        yield* TestClock.adjust("20 seconds");
+        yield* Fiber.join(fiber);
+        expect(calls).toHaveLength(4);
+        expect(heartbeats).toEqual([5_000, 15_000, 35_000]);
+      }).pipe(
+        Effect.provide(
+          CodeHostGitLab.layer.pipe(Layer.provideMerge(cfgLayer), Layer.provideMerge(proc)),
+        ),
+      );
+    },
+  );
 });
 
 // Two independent, drift-free stacks off a shared `dev` trunk, optionally with a
@@ -5538,6 +5654,33 @@ describe("Stack", () => {
         "→ update #5 stack block",
         "→ update #3 stack block",
       ]);
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land auto emits wait heartbeats to stderr with elapsed time", () => {
+    const events: Array<Progress.ProgressEvent> = [];
+    const test = makeLand([], "stack-a", events, {
+      wait: (pr: number, onPoll?: (elapsedMillis: number) => Effect.Effect<void>) =>
+        onPoll
+          ? Effect.gen(function* () {
+              yield* onPoll(5_000);
+              yield* onPoll(15_000);
+            })
+          : Effect.void,
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.land("stack-a", { auto: true });
+
+      const heartbeats = events.filter(
+        (event) => event._tag === "Wait" && event.message.includes("merge ("),
+      );
+      expect(heartbeats.map((event) => event.message)).toEqual([
+        "waiting for #4 to merge (5s)",
+        "waiting for #4 to merge (15s)",
+      ]);
+      expect(heartbeats.every((event) => event.stream === "stderr")).toBe(true);
     }).pipe(Effect.provide(test.layer));
   });
 
