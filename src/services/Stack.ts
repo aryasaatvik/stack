@@ -52,6 +52,7 @@ export interface StackService {
       readonly auto?: boolean;
       readonly admin?: boolean;
       readonly through?: string;
+      readonly except?: string;
       readonly eager?: boolean;
       readonly continue?: boolean;
     },
@@ -150,6 +151,11 @@ ${note}`;
         state: ReturnType<typeof stackState>,
         pulls: ReadonlyArray<PullRef>,
         actions: ReadonlyArray<StackResult.StackResultItem>,
+        // The pre-rewrite parent tip this run computed the replay range from
+        // (persisted anchor or the parent's own backup ref) — the surgical range
+        // base for a manual `git rebase --onto`, so only the branch's own commits
+        // replay instead of the wide merge-base range that conflicted.
+        rangeBase: string,
       ) =>
         new StackOperationError(
           [
@@ -175,8 +181,13 @@ ${note}`;
             "  the temporary replay branch was deleted",
             "  the undo journal was saved",
             "",
-            "Next:",
-            `  repair ${rebase.branch} from ${rebase.backup}, push it, then run: stack sync --apply`,
+            "Next: replay only this branch's own commits onto the new parent, against freshly fetched refs",
+            "  1. git fetch origin",
+            `  2. git rebase --onto ${rebase.parent} ${rangeBase} ${rebase.branch}`,
+            "  3. resolve conflicts, then: git rebase --continue",
+            `  4. git push --force-with-lease origin ${rebase.branch}`,
+            `  5. stack merge --continue   (campaigns)  /  stack sync --apply ${rebase.branch}`,
+            `  ${rangeBase} is the pre-rewrite parent tip used as the range base — it replays only ${rebase.branch}'s own commits. Always rebase onto fresh origin refs, never a stale local trunk.`,
             "  or restore the pre-sync state with: stack undo --apply",
             "",
             "Git error:",
@@ -1204,7 +1215,8 @@ ${note}`;
                     git,
                     checkpoint,
                     step,
-                    onReplayFailure: (err) => replayFailure(rebase, err, state, pulls, actions),
+                    onReplayFailure: (err) =>
+                      replayFailure(rebase, err, state, pulls, actions, anchor ?? from),
                   });
                   saved.set(rebase.branch, rebase.backup);
                   const tip = yield* git.head(link.branch);
@@ -1895,6 +1907,44 @@ ${note}`;
           }),
       );
 
+      // Resolve `merge --auto --except <branch-or-change>`: land the whole stack in
+      // its natural (parent-before-child) landing order minus the named subtree.
+      // The excluded subtree is dropped from both the landing chain and the final
+      // repair pass's scope (`stack`), so those branches are never rebased or
+      // pushed — a landed parent still retargets them to trunk (pre-merge) so their
+      // requests survive, but their history waits for their own campaign.
+      const exceptTarget = Effect.fn("Stack.land.exceptTarget")(
+        (branch: string | undefined, except: string) =>
+          Effect.gen(function* () {
+            const { state, pulls, target } = yield* landTarget(branch);
+            const input = except.trim();
+            const prText = input.startsWith("#") || input.startsWith("!") ? input.slice(1) : input;
+            const prNumber = /^\d+$/.test(prText) ? Number(prText) : null;
+            const byPr = prNumber
+              ? (pulls.find((item) => Number(item.number) === prNumber)?.head ??
+                state.links.find((item) => Number(item.pr) === prNumber)?.branch ??
+                null)
+              : null;
+            const exceptBranch = byPr ? String(byPr) : input;
+            // DFS preorder over the whole stack from the root is a valid landing
+            // order (each parent precedes its children).
+            const full = [...scopedBranches(state, target)];
+            if (!full.includes(exceptBranch)) {
+              return yield* Effect.fail(
+                new StackOperationError(`${except} is not in the current stack from ${target}`),
+              );
+            }
+            const excluded = scopedBranches(state, exceptBranch);
+            const chain = full.filter((item) => !excluded.has(item));
+            if (chain.length === 0) {
+              return yield* Effect.fail(
+                new StackOperationError(`excluding ${exceptBranch} leaves nothing to merge`),
+              );
+            }
+            return { except: exceptBranch, chain, stack: chain };
+          }),
+      );
+
       const landOne = Effect.fn("Stack.landOne")(
         (
           branch?: string,
@@ -1909,6 +1959,10 @@ ${note}`;
             //   null      -> repair nothing (last chain root; the campaign's final
             //                pass freshens whatever remains).
             readonly repairOnly?: string | null;
+            // Restricts a full (eager) repair to these branches. --except campaigns
+            // pass their trimmed stack set so eager landings never touch the
+            // excluded subtree. Ignored when repairOnly narrows the scope further.
+            readonly repairScope?: ReadonlySet<string>;
             // Called once the root has merged (after the post-merge baseline is
             // written), before descendant repair. Campaigns use it to promote the
             // landing into persisted campaign state so a repair conflict leaves the
@@ -1925,6 +1979,7 @@ ${note}`;
             const auto = opts?.auto ?? false;
             const admin = opts?.admin ?? false;
             const repairOnly = opts?.repairOnly;
+            const repairScope = opts?.repairScope;
             const onLanded = opts?.onLanded;
             if (apply && auto) {
               return yield* Effect.fail(
@@ -2090,7 +2145,9 @@ ${note}`;
             const repairCheckBranches =
               repairOnly === undefined
                 ? plannedRepair.actions.flatMap((item) =>
-                    item._tag === "Rebase" ? [String(item.branch)] : [],
+                    item._tag === "Rebase" && (!repairScope || repairScope.has(String(item.branch)))
+                      ? [String(item.branch)]
+                      : [],
                   )
                 : repairOnly === null
                   ? []
@@ -2119,7 +2176,9 @@ ${note}`;
             // repair only the next root's link joins it, deferring the rest.
             const repairScopeState =
               repairOnly === undefined
-                ? scopedState
+                ? repairScope
+                  ? filterState(scopedState, new Set([target, ...repairScope]))
+                  : scopedState
                 : filterState(
                     scopedState,
                     new Set(repairOnly === null ? [target] : [target, repairOnly]),
@@ -2128,7 +2187,9 @@ ${note}`;
             // when eager, just the next root when lazy, nothing for the last root.
             const writeScope =
               repairOnly === undefined
-                ? branches
+                ? repairScope
+                  ? new Set<string>(repairScope)
+                  : branches
                 : new Set<string>(repairOnly === null ? [] : [repairOnly]);
             const repairAfterMerge = Effect.fn("Stack.land.repairAfterMerge")(() =>
               Effect.gen(function* () {
@@ -2261,6 +2322,7 @@ ${note}`;
       const runCampaign = Effect.fn("Stack.land.runCampaign")(
         (input: {
           readonly through: string;
+          readonly except?: string;
           readonly eager: boolean;
           readonly chain: ReadonlyArray<string>;
           readonly stack: ReadonlyArray<string>;
@@ -2274,6 +2336,7 @@ ${note}`;
                 campaignState({
                   at: stamp,
                   through: input.through,
+                  ...(input.except === undefined ? {} : { except: input.except }),
                   eager: input.eager,
                   chain: input.chain,
                   stack: input.stack,
@@ -2293,6 +2356,7 @@ ${note}`;
                 ...(yield* landOne(target, {
                   auto: true,
                   ...(repairOnly === undefined ? {} : { repairOnly }),
+                  ...(input.eager ? { repairScope: new Set(input.stack) } : {}),
                   onLanded: (info) =>
                     Effect.gen(function* () {
                       landed = [...landed, campaignLanding(info)];
@@ -2307,7 +2371,11 @@ ${note}`;
               if (tail.length > 0) items.push("", ...tail);
             }
             yield* store.clearCampaign();
-            items.push(`merged through: ${input.through}`);
+            items.push(
+              input.except === undefined
+                ? `merged through: ${input.through}`
+                : `merged all except: ${input.except}`,
+            );
             return items;
           }),
       );
@@ -2326,6 +2394,13 @@ ${note}`;
               return yield* Effect.fail(
                 new StackOperationError(
                   "merge --continue resumes the saved campaign; drop --through (the campaign owns it)",
+                ),
+              );
+            }
+            if (opts.except !== undefined) {
+              return yield* Effect.fail(
+                new StackOperationError(
+                  "merge --continue resumes the saved campaign; drop --except (the campaign owns it)",
                 ),
               );
             }
@@ -2363,6 +2438,7 @@ ${note}`;
             }
             return yield* runCampaign({
               through: String(campaign.through),
+              ...(campaign.except === undefined ? {} : { except: String(campaign.except) }),
               eager: campaign.eager,
               chain: campaign.chain.map(String),
               stack: campaign.stack.map(String),
@@ -2371,6 +2447,31 @@ ${note}`;
           }
 
           const through = opts?.through;
+          const except = opts?.except;
+
+          if (through !== undefined && except !== undefined) {
+            return yield* Effect.fail(
+              new StackOperationError("use either --through or --except, not both"),
+            );
+          }
+
+          if (except !== undefined) {
+            if (!opts?.auto) {
+              return yield* Effect.fail(new StackOperationError("use --except only with --auto"));
+            }
+            const resolved = yield* exceptTarget(branch, except);
+            return yield* runCampaign({
+              // The final landed root labels the journal (a real BranchName);
+              // `except` carries the excluded subtree for the completion message.
+              through: resolved.chain[resolved.chain.length - 1]!,
+              except: resolved.except,
+              eager: opts?.eager ?? false,
+              chain: resolved.chain,
+              stack: resolved.stack,
+              landed: [],
+            });
+          }
+
           if (!through) {
             return yield* landOne(branch, {
               apply: opts?.apply ?? false,

@@ -875,6 +875,7 @@ const makeLand = (
   codeHost: Partial<Git.Interface & CodeHost.Interface> = {},
   includeUnrelatedRoot = false,
   forkStackC = false,
+  siblingRoot = false,
 ) => {
   const seen: Array<string> = [];
   const refs = new Map([
@@ -885,6 +886,12 @@ const makeLand = (
   ]);
   if (includeUnrelatedRoot) {
     refs.set("other-root", branchRef({ name: "other-root", head: "other-root-1" }));
+  }
+  // Fork a sibling subtree off the root: dev -> stack-a -> { stack-b -> stack-c, stack-d }.
+  // Used to exercise `--except stack-d`, which lands the stack-a/stack-b/stack-c chain
+  // while stack-d stays untouched.
+  if (siblingRoot) {
+    refs.set("stack-d", branchRef({ name: "stack-d", head: "stack-d-1" }));
   }
   let pulls = [
     pullRef({
@@ -921,6 +928,18 @@ const makeLand = (
       }),
     ];
   }
+  if (siblingRoot) {
+    pulls = [
+      ...pulls,
+      pullRef({
+        number: 7,
+        head: "stack-d",
+        base: "stack-a",
+        url: "u7",
+        draft: false,
+      }),
+    ];
+  }
   const bases = new Map([
     ["stack-a:dev", "dev-1"],
     ["stack-b:stack-a", "stack-a-1"],
@@ -930,6 +949,10 @@ const makeLand = (
   ]);
   if (includeUnrelatedRoot) {
     bases.set("other-root:dev", "dev-1");
+  }
+  if (siblingRoot) {
+    bases.set("stack-d:stack-a", "stack-a-1");
+    bases.set("stack-d:dev", "dev-1");
   }
   let merged = false;
   const links = [
@@ -959,6 +982,16 @@ const makeLand = (
         parent: "dev",
         anchor: "dev-1",
         pr: 9,
+      }),
+    );
+  }
+  if (siblingRoot) {
+    links.push(
+      stackLink({
+        branch: "stack-d",
+        parent: "stack-a",
+        anchor: "stack-a-1",
+        pr: 7,
       }),
     );
   }
@@ -5080,6 +5113,143 @@ describe("Stack", () => {
       const error = yield* Effect.flip(stack.land(undefined, { through: "stack-b" }));
 
       expect(String(error)).toContain("use --through only with --auto");
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land auto except lands every root but the named subtree", () => {
+    // dev -> stack-a -> { stack-b -> stack-c, stack-d }. `--except stack-d` lands
+    // root (stack-a) then A (stack-b) then A1 (stack-c); the excluded sibling B
+    // (stack-d) is never rebased, pushed, or merged.
+    const test = makeLand([], "stack-a", null, {}, false, false, true);
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      const done = yield* stack.land(undefined, { auto: true, except: "stack-d" });
+
+      expect(done).toContain("merged all except: stack-d");
+      expect(test.seen).toContain("auto 4"); // stack-a (root)
+      expect(test.seen).toContain("auto 5"); // stack-b (A)
+      expect(test.seen).toContain("auto 3"); // stack-c (A1)
+      // the excluded subtree never lands, rebases, or pushes.
+      expect(test.seen).not.toContain("auto 7"); // stack-d (B) is never merged
+      expect(test.seen.filter((item) => item.startsWith("rebase stack-d"))).toHaveLength(0);
+      expect(pushCount(test.seen, "stack-d")).toBe(0);
+      // campaign completes and clears.
+      expect(yield* store.readCampaign()).toBeNull();
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land auto except with --eager never repairs the excluded subtree", () => {
+    // Eager landings run a full repair after every merge; the repair scope must
+    // still honor the exclusion — stack-d may not be rebased or pushed by any
+    // intermediate pass.
+    const test = makeLand([], "stack-a", null, {}, false, false, true);
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const done = yield* stack.land(undefined, {
+        auto: true,
+        except: "stack-d",
+        eager: true,
+      });
+
+      expect(done).toContain("merged all except: stack-d");
+      expect(test.seen).not.toContain("auto 7");
+      expect(test.seen.filter((item) => item.startsWith("rebase stack-d"))).toHaveLength(0);
+      expect(pushCount(test.seen, "stack-d")).toBe(0);
+      // eager still repairs remaining chain members after intermediate landings.
+      expect(pushCount(test.seen, "stack-c")).toBeGreaterThan(1);
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land except guards: through, auto, unknown branch, and the only root", () => {
+    const test = makeLand([], "stack-a", null, {}, false, false, true);
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+
+      const noAuto = yield* Effect.flip(stack.land(undefined, { except: "stack-d" }));
+      expect(String(noAuto)).toContain("use --except only with --auto");
+
+      const both = yield* Effect.flip(
+        stack.land(undefined, { auto: true, through: "5", except: "stack-d" }),
+      );
+      expect(String(both)).toContain("use either --through or --except, not both");
+
+      const unknown = yield* Effect.flip(stack.land(undefined, { auto: true, except: "stack-z" }));
+      expect(String(unknown)).toContain("stack-z is not in the current stack from stack-a");
+
+      const onlyRoot = yield* Effect.flip(stack.land(undefined, { auto: true, except: "stack-a" }));
+      expect(String(onlyRoot)).toContain("excluding stack-a leaves nothing to merge");
+
+      expect(test.seen).not.toContain("auto 4");
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land auto except records progress on conflict and resumes with continue", () => {
+    let fixed = false;
+    const test = makeLand(
+      [],
+      "stack-a",
+      null,
+      {
+        replay: (branch: string, parent: string) =>
+          branch === "stack-c" && !fixed
+            ? Effect.fail(new ReplayConflictError("stack-c", parent, ["bun.lock"], "conflict"))
+            : Effect.void,
+      },
+      false,
+      false,
+      true,
+    );
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+
+      // stack-a and stack-b land; repairing stack-c (the next root) conflicts.
+      const error = yield* Effect.flip(stack.land(undefined, { auto: true, except: "stack-d" }));
+      expect(String(error)).toContain("stack-c");
+
+      const campaign = yield* store.readCampaign();
+      expect(campaign?.landed.map((item) => String(item.branch))).toEqual(["stack-a", "stack-b"]);
+      expect(String(campaign?.chain[campaign.landed.length])).toBe("stack-c");
+      expect(String(campaign?.except)).toBe("stack-d");
+      // the excluded subtree is never touched, even mid-campaign.
+      expect(test.seen).not.toContain("auto 7");
+      expect(pushCount(test.seen, "stack-d")).toBe(0);
+
+      // Operator fixes and pushes stack-c, then resumes the campaign.
+      fixed = true;
+      const done = yield* stack.land(undefined, { continue: true });
+      expect(done).toContain("merged all except: stack-d");
+      expect(test.seen).toContain("auto 3");
+      expect(pushCount(test.seen, "stack-d")).toBe(0);
+      expect(yield* store.readCampaign()).toBeNull();
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("replay conflict hint spells out the surgical manual recipe", () => {
+    const test = makeLand([], "stack-a", null, {
+      replay: (branch: string, parent: string) =>
+        branch === "stack-c"
+          ? Effect.fail(new ReplayConflictError("stack-c", parent, ["bun.lock"], "conflict"))
+          : Effect.void,
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const error = yield* Effect.flip(stack.land(undefined, { auto: true, through: "3" }));
+      const text = String(error);
+
+      // The hint names the run's backup ref, freshly fetched refs, the surgical
+      // --onto range, and force-with-lease.
+      expect(text).toContain("backup/stack-sync");
+      expect(text).toContain("git fetch origin");
+      expect(text).toContain("git rebase --onto");
+      expect(text).toContain("--force-with-lease origin stack-c");
+      expect(text).toContain("stack merge --continue");
     }).pipe(Effect.provide(test.layer));
   });
 
