@@ -1,4 +1,4 @@
-import { PullMeta, PullRef } from "./domain/model.ts";
+import { PullRef } from "./domain/model.ts";
 import type { DisplayTree } from "./stackGraph.ts";
 
 const start = "<!-- stack:links:start -->";
@@ -14,7 +14,7 @@ const inlineTitle = (value: string | null) => {
 const format = (
   branch: string,
   prs: ReadonlyMap<string, PullRef>,
-  metas: ReadonlyMap<string, PullMeta>,
+  metas: ReadonlyMap<string, PullRef>,
   reference: (number: number) => string,
   showTitles: boolean,
 ) => {
@@ -87,7 +87,7 @@ export const references = (body: string) => {
 
 export const render = (opts: {
   readonly pulls: ReadonlyArray<PullRef>;
-  readonly metas: ReadonlyMap<string, PullMeta>;
+  readonly metas: ReadonlyMap<string, PullRef>;
   readonly tree: DisplayTree | null;
   readonly completed?: ReadonlySet<string>;
   readonly branch: string;

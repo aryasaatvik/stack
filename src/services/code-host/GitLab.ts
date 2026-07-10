@@ -26,10 +26,12 @@ const labelName = (entry: typeof LabelEntry.Type): string =>
 class MRData extends Schema.Class<MRData>("MRData")({
   iid: Schema.Number,
   title: Schema.String,
+  description: Schema.NullOr(Schema.String),
   source_branch: Schema.String,
   target_branch: Schema.String,
   web_url: Schema.String,
   draft: Schema.Boolean,
+  labels: Schema.Array(LabelEntry),
   source_project_id: Schema.NullOr(Schema.Number),
 }) {}
 
@@ -94,6 +96,8 @@ const ref = (row: MRData, headRepository: string | null) =>
     base: row.target_branch,
     url: row.web_url,
     draft: row.draft,
+    body: row.description ?? "",
+    labels: row.labels.map((item) => new PullLabel({ name: labelName(item) })),
   });
 
 const meta = (row: MRView, headRepository: string | null) =>
@@ -296,6 +300,8 @@ export const layer = Layer.effect(
         base,
         url: created.trim(),
         draft: false,
+        body,
+        labels: labels.map((name) => new PullLabel({ name })),
       });
     });
 

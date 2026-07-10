@@ -42,13 +42,15 @@ import { Store } from "../src/services/Store.ts";
 
 const ref = (name: string, head = name) => branchRef({ name, head });
 
-const pr = (number: number, head: string, base: string, checks?: string) =>
+const pr = (number: number, head: string, base: string, checks?: string, body = "") =>
   pullRef({
     number,
     head,
     base,
     url: `u${number}`,
     draft: false,
+    body,
+    labels: [],
     ...(checks ? { checks } : {}),
   });
 
@@ -229,6 +231,8 @@ const integrationGitHub = (opts: {
                     base,
                     url: item.url,
                     draft: item.draft,
+                    body: item.body,
+                    labels: item.labels,
                   })
                 : item,
             ),
@@ -237,6 +241,24 @@ const integrationGitHub = (opts: {
       const updateBody = (pr: number, body: string) =>
         Effect.gen(function* () {
           yield* record(`body ${pr}`);
+          yield* Ref.update(pulls, (items) =>
+            items.map((item) =>
+              item.number === pr
+                ? pullRef({
+                    number: item.number,
+                    title: item.title,
+                    head: item.head,
+                    headRepository: item.headRepository,
+                    base: item.base,
+                    url: item.url,
+                    draft: item.draft,
+                    checks: item.checks,
+                    body,
+                    labels: item.labels,
+                  })
+                : item,
+            ),
+          );
           yield* Ref.update(metas, (items) => {
             const nextItems = new Map(items);
             const item = nextItems.get(pr);
@@ -274,6 +296,8 @@ const integrationGitHub = (opts: {
             base,
             url: `https://example.com/${number}`,
             draft: false,
+            body,
+            labels: labels.map((name) => new PullLabel({ name })),
           });
           yield* record(`create ${branch} ${base}`);
           yield* Ref.update(pulls, (items) => [...items, made]);
@@ -404,6 +428,8 @@ const realStack = (opts: {
               base: branch.parent,
               url: `u${branch.number}`,
               draft: false,
+              body: `Stacked on ${branch.parent}.`,
+              labels: [],
             }),
           ),
           metas: opts.branches.map((branch) =>
@@ -488,6 +514,8 @@ const make = (state = new StackState({ version: 1, links: [] })) =>
             base: "dev",
             url: "u1",
             draft: false,
+            body: "",
+            labels: [],
           }),
           pullRef({
             number: 17601,
@@ -495,6 +523,8 @@ const make = (state = new StackState({ version: 1, links: [] })) =>
             base: "effectify-watcher",
             url: "u2",
             draft: false,
+            body: "",
+            labels: [],
           }),
           pullRef({
             number: 17634,
@@ -502,6 +532,8 @@ const make = (state = new StackState({ version: 1, links: [] })) =>
             base: "effectify-file-watcher-service",
             url: "u3",
             draft: false,
+            body: "",
+            labels: [],
           }),
           pullRef({
             number: 17640,
@@ -509,6 +541,8 @@ const make = (state = new StackState({ version: 1, links: [] })) =>
             base: "effectify-vcs",
             url: "u4",
             draft: false,
+            body: "",
+            labels: [],
           }),
           pullRef({
             number: 17675,
@@ -517,6 +551,8 @@ const make = (state = new StackState({ version: 1, links: [] })) =>
             base: "effectify-env-filetime",
             url: "u5",
             draft: false,
+            body: "",
+            labels: [],
           }),
         ],
       }),
@@ -640,6 +676,8 @@ const makeSync = (codeHost: Partial<CodeHost.Interface> = {}) => {
       base: "dev",
       url: "u5",
       draft: false,
+      body: "## Summary\n- old body\n\nStacked on #5.\n",
+      labels: [new PullLabel({ name: "beta" })],
     }),
     pullRef({
       number: 3,
@@ -648,6 +686,17 @@ const makeSync = (codeHost: Partial<CodeHost.Interface> = {}) => {
       base: "stack-b",
       url: "u3",
       draft: false,
+      body: `## Summary
+- child body
+
+<!-- stack:links:start -->
+old stack block
+Merged
+<!-- stack:links:end -->
+
+Footer
+`,
+      labels: [],
     }),
   ];
   const bases = new Map([
@@ -773,6 +822,8 @@ Footer
                       base,
                       url: pull.url,
                       draft: pull.draft,
+                      body: pull.body,
+                      labels: pull.labels,
                     })
                   : pull,
               );
@@ -812,6 +863,8 @@ Footer
                 base,
                 url: "u6",
                 draft: false,
+                body,
+                labels: labels.map((name) => new PullLabel({ name })),
               });
               seen.push(`create ${branch} ${base} ${title}`);
               seen.push(body);
@@ -899,6 +952,8 @@ const makeLand = (
       base: "dev",
       url: "u4",
       draft: false,
+      body: "",
+      labels: [],
     }),
     pullRef({
       number: 5,
@@ -906,6 +961,8 @@ const makeLand = (
       base: "stack-a",
       url: "u5",
       draft: false,
+      body: "",
+      labels: [],
     }),
     pullRef({
       number: 3,
@@ -913,6 +970,8 @@ const makeLand = (
       base: forkStackC ? "stack-a" : "stack-b",
       url: "u3",
       draft: false,
+      body: "",
+      labels: [],
     }),
   ];
   if (includeUnrelatedRoot) {
@@ -924,6 +983,8 @@ const makeLand = (
         base: "dev",
         url: "u9",
         draft: false,
+        body: "",
+        labels: [],
       }),
     ];
   }
@@ -936,6 +997,8 @@ const makeLand = (
         base: "stack-a",
         url: "u7",
         draft: false,
+        body: "",
+        labels: [],
       }),
     ];
   }
@@ -1084,6 +1147,8 @@ const makeLand = (
                       base,
                       url: pull.url,
                       draft: pull.draft,
+                      body: pull.body,
+                      labels: pull.labels,
                     })
                   : pull,
               );
@@ -1105,6 +1170,8 @@ const makeLand = (
                 base,
                 url: "u6",
                 draft: false,
+                body,
+                labels: labels.map((name) => new PullLabel({ name })),
               });
               seen.push(`create ${branch} ${base} ${title}`);
               seen.push(body);
@@ -1142,6 +1209,8 @@ const makeSyncNovel = () => {
       base: "dev",
       url: "u5",
       draft: false,
+      body: "",
+      labels: [],
     }),
     pullRef({
       number: 3,
@@ -1150,6 +1219,8 @@ const makeSyncNovel = () => {
       base: "stack-b",
       url: "u3",
       draft: false,
+      body: "",
+      labels: [],
     }),
   ];
 
@@ -1242,6 +1313,8 @@ const makeSyncNovel = () => {
                       base,
                       url: pull.url,
                       draft: pull.draft,
+                      body: pull.body,
+                      labels: pull.labels,
                     })
                   : pull,
               );
@@ -1256,6 +1329,8 @@ const makeSyncNovel = () => {
                 base,
                 url: "u6",
                 draft: false,
+                body: "",
+                labels: [],
               }),
             ),
         }),
@@ -1988,10 +2063,12 @@ describe("GitHub", () => {
                 {
                   number: 7,
                   title: "fork PR",
+                  body: null,
                   head: { ref: "feature/x", repo: { full_name: "KitLangton/OpenCode" } },
                   base: { ref: "dev" },
                   html_url: "https://github.com/anomalyco/opencode/pull/7",
                   draft: false,
+                  labels: [{ name: "bug" }, { name: "stack" }],
                 },
               ],
             ]),
@@ -2004,6 +2081,8 @@ describe("GitHub", () => {
       const pulls = yield* github.changes();
 
       expect(pulls[0]?.headRepository).toBe("kitlangton/opencode");
+      expect(pulls[0]?.body).toBe("");
+      expect(pulls[0]?.labels.map((label) => label.name)).toEqual(["bug", "stack"]);
       expect(github.repository("git@github.com:KITLANGTON/OpenCode.git")).toBe(
         "kitlangton/opencode",
       );
@@ -2025,20 +2104,24 @@ describe("GitHub", () => {
                 {
                   number: 1,
                   title: "one",
+                  body: "first body",
                   head: { ref: "one", repo: { full_name: "owner/project" } },
                   base: { ref: "main" },
                   html_url: "u1",
                   draft: false,
+                  labels: [{ name: "one" }],
                 },
               ],
               [
                 {
                   number: 2,
                   title: "two",
+                  body: null,
                   head: { ref: "two", repo: { full_name: "owner/project" } },
                   base: { ref: "main" },
                   html_url: "u2",
                   draft: false,
+                  labels: [],
                 },
               ],
             ]);
@@ -2051,6 +2134,8 @@ describe("GitHub", () => {
       const pulls = yield* github.changes();
 
       expect(pulls.map((pull) => Number(pull.number))).toEqual([1, 2]);
+      expect(pulls.map((pull) => pull.body)).toEqual(["first body", ""]);
+      expect(pulls.map((pull) => pull.labels.map((label) => label.name))).toEqual([["one"], []]);
       expect(calls).toEqual([
         [
           "gh",
@@ -2156,10 +2241,12 @@ describe("GitLab", () => {
               : JSON.stringify({
                   iid: 7,
                   title: "fork MR",
+                  description: "fork body",
                   source_branch: "feature/x",
                   target_branch: "main",
                   web_url: "https://gitlab.com/upstream/project/-/merge_requests/7",
                   draft: false,
+                  labels: [],
                   source_project_id: 44,
                 });
           }),
@@ -2206,19 +2293,23 @@ describe("GitLab", () => {
                     {
                       iid: 1,
                       title: "one",
+                      description: "one body",
                       source_branch: "one",
                       target_branch: "main",
                       web_url: "u1",
                       draft: false,
+                      labels: ["bug", { name: "stack" }],
                       source_project_id: 1,
                     },
                     {
                       iid: 2,
                       title: "two",
+                      description: null,
                       source_branch: "two",
                       target_branch: "main",
                       web_url: "u2",
                       draft: false,
+                      labels: [],
                       source_project_id: 2,
                     },
                   ]
@@ -2234,6 +2325,11 @@ describe("GitLab", () => {
 
       expect(pulls.map((pull) => Number(pull.number))).toEqual([1, 2]);
       expect(pulls.map((pull) => pull.headRepository)).toEqual(["owner/one", "owner/two"]);
+      expect(pulls.map((pull) => pull.body)).toEqual(["one body", ""]);
+      expect(pulls.map((pull) => pull.labels.map((label) => label.name))).toEqual([
+        ["bug", "stack"],
+        [],
+      ]);
     }).pipe(
       Effect.provide(CodeHostGitLab.layer.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))),
     );
@@ -2253,19 +2349,23 @@ describe("GitLab", () => {
                   {
                     iid: 1,
                     title: "one",
+                    description: null,
                     source_branch: "one",
                     target_branch: "main",
                     web_url: "u1",
                     draft: false,
+                    labels: [],
                     source_project_id: 1,
                   },
                   {
                     iid: 2,
                     title: "two",
+                    description: null,
                     source_branch: "two",
                     target_branch: "main",
                     web_url: "u2",
                     draft: false,
+                    labels: [],
                     source_project_id: 1,
                   },
                 ]
@@ -3996,6 +4096,8 @@ describe("Stack", () => {
           base: "dev",
           url: "u10",
           draft: false,
+          body: "",
+          labels: [],
         }),
         pullRef({
           number: 11,
@@ -4004,6 +4106,8 @@ describe("Stack", () => {
           base: "stack-a",
           url: "u11",
           draft: false,
+          body: "",
+          labels: [],
         }),
       ],
       bases: Object.fromEntries(baseMap),
@@ -4076,6 +4180,8 @@ describe("Stack", () => {
           base: "dev",
           url: "u10",
           draft: false,
+          body: "",
+          labels: [],
         }),
       ],
       bases: bases(["stack-a", "dev", "dev-head"]),
@@ -4115,6 +4221,8 @@ describe("Stack", () => {
           base: "dev",
           url: "u10",
           draft: false,
+          body: "",
+          labels: [],
         }),
         pullRef({
           number: 11,
@@ -4123,6 +4231,8 @@ describe("Stack", () => {
           base: "dev",
           url: "u11",
           draft: false,
+          body: "",
+          labels: [],
         }),
       ],
       bases: bases(["stack-a", "dev", "dev-old"]),
@@ -4549,9 +4659,33 @@ describe("Stack", () => {
   it.effect("links keep the root PR first when rendering a linear stack", () => {
     const bodies = new Map<number, string>();
     const pulls = [
-      pullRef({ number: 1, head: "stack-a", base: "dev", url: "u1", draft: false }),
-      pullRef({ number: 2, head: "stack-b", base: "stack-a", url: "u2", draft: false }),
-      pullRef({ number: 3, head: "stack-c", base: "stack-b", url: "u3", draft: false }),
+      pullRef({
+        number: 1,
+        head: "stack-a",
+        base: "dev",
+        url: "u1",
+        draft: false,
+        body: "",
+        labels: [],
+      }),
+      pullRef({
+        number: 2,
+        head: "stack-b",
+        base: "stack-a",
+        url: "u2",
+        draft: false,
+        body: "",
+        labels: [],
+      }),
+      pullRef({
+        number: 3,
+        head: "stack-c",
+        base: "stack-b",
+        url: "u3",
+        draft: false,
+        body: "",
+        labels: [],
+      }),
     ];
     const staleRoot = `<!-- stack:links:start -->
 ### [Stack](https://github.com/kitlangton/stack)
@@ -4614,9 +4748,33 @@ describe("Stack", () => {
   it.effect("links render sibling PRs in a forked stack", () => {
     const bodies = new Map<number, string>();
     const pulls = [
-      pullRef({ number: 1, head: "stack-a", base: "dev", url: "u1", draft: false }),
-      pullRef({ number: 2, head: "stack-b", base: "stack-a", url: "u2", draft: false }),
-      pullRef({ number: 3, head: "stack-c", base: "stack-a", url: "u3", draft: false }),
+      pullRef({
+        number: 1,
+        head: "stack-a",
+        base: "dev",
+        url: "u1",
+        draft: false,
+        body: "",
+        labels: [],
+      }),
+      pullRef({
+        number: 2,
+        head: "stack-b",
+        base: "stack-a",
+        url: "u2",
+        draft: false,
+        body: "",
+        labels: [],
+      }),
+      pullRef({
+        number: 3,
+        head: "stack-c",
+        base: "stack-a",
+        url: "u3",
+        draft: false,
+        body: "",
+        labels: [],
+      }),
     ];
     const metas = new Map(
       pulls.map((pull) => [
@@ -4703,7 +4861,7 @@ describe("Stack", () => {
 - [ ] #2
 - [ ] **#3** 👈 current
 <!-- stack:links:end -->`;
-    const pulls = [pr(2, "stack-b", "dev"), pr(3, "stack-c", "stack-b")];
+    const pulls = [pr(2, "stack-b", "dev"), pr(3, "stack-c", "stack-b", undefined, old)];
     const layer = stackTestLayer({
       current: "stack-c",
       refs: [ref("dev"), ref("stack-b"), ref("stack-c")],
@@ -4744,7 +4902,7 @@ describe("Stack", () => {
 - [ ] #2
 - [ ] **#3** 👈 current
 <!-- stack:links:end -->`;
-    const pulls = [pr(4, "stack-b", "dev")];
+    const pulls = [pr(4, "stack-b", "dev", undefined, old)];
     const layer = stackTestLayer({
       current: "stack-b",
       refs: [ref("dev"), ref("stack-b")],
@@ -4781,7 +4939,7 @@ describe("Stack", () => {
 2. #2
 3. **#3** 👈 current
 <!-- stack:links:end -->`;
-    const pulls = [pr(4, "stack-b", "dev")];
+    const pulls = [pr(4, "stack-b", "dev", undefined, old)];
     const layer = stackTestLayer({
       current: "stack-b",
       refs: [ref("dev"), ref("stack-b")],
@@ -4978,6 +5136,8 @@ describe("Stack", () => {
           base: "dev",
           url: "u99",
           draft: false,
+          body: "",
+          labels: [],
         }),
         pullRef({
           number: 1,
@@ -4986,6 +5146,8 @@ describe("Stack", () => {
           base: "dev",
           url: "u1",
           draft: false,
+          body: "",
+          labels: [],
         }),
         pullRef({
           number: 98,
@@ -4994,6 +5156,8 @@ describe("Stack", () => {
           base: "root",
           url: "u98",
           draft: false,
+          body: "",
+          labels: [],
         }),
         pullRef({
           number: 2,
@@ -5002,6 +5166,8 @@ describe("Stack", () => {
           base: "root",
           url: "u2",
           draft: false,
+          body: "",
+          labels: [],
         }),
       ],
       bases: bases(["root", "dev", "dev-new"], ["child", "root", "root"]),
@@ -5122,6 +5288,8 @@ describe("Stack", () => {
               base,
               url: "u5",
               draft: false,
+              body: "",
+              labels: [],
             });
             pulls = [...pulls, made];
             return made;
@@ -5745,6 +5913,8 @@ describe("Stack", () => {
                 base: "dev",
                 url: "u2",
                 draft: false,
+                body: "",
+                labels: [],
               }),
               pullRef({
                 number: 3,
@@ -5752,6 +5922,8 @@ describe("Stack", () => {
                 base: "stack-b",
                 url: "u3",
                 draft: false,
+                body: "",
+                labels: [],
               }),
             ],
           }),
@@ -6020,8 +6192,24 @@ describe("Stack", () => {
         ["stack-b", branchRef({ name: "stack-b", head: "stack-b-1" })],
       ]);
       const pulls = [
-        pullRef({ number: 4, head: "stack-a", base: "dev", url: "u4", draft: false }),
-        pullRef({ number: 5, head: "stack-b", base: "stack-a", url: "u5", draft: false }),
+        pullRef({
+          number: 4,
+          head: "stack-a",
+          base: "dev",
+          url: "u4",
+          draft: false,
+          body: "",
+          labels: [],
+        }),
+        pullRef({
+          number: 5,
+          head: "stack-b",
+          base: "stack-a",
+          url: "u5",
+          draft: false,
+          body: "",
+          labels: [],
+        }),
       ];
       const bases = new Map([
         ["stack-a:dev", "dev-1"],
@@ -6105,7 +6293,15 @@ describe("Stack", () => {
             close: () => Effect.void,
             create: () =>
               Effect.succeed(
-                pullRef({ number: 99, head: "x", base: "dev", url: "u", draft: false }),
+                pullRef({
+                  number: 99,
+                  head: "x",
+                  base: "dev",
+                  url: "u",
+                  draft: false,
+                  body: "",
+                  labels: [],
+                }),
               ),
             remote: () => Effect.succeed(Option.some("git@github.com:example/repo.git")),
             remotes: () =>
@@ -6442,6 +6638,8 @@ describe("Stack", () => {
                   base: "dev",
                   url: "u1",
                   draft: false,
+                  body: "",
+                  labels: [],
                 }),
                 pullRef({
                   number: 2,
@@ -6449,6 +6647,8 @@ describe("Stack", () => {
                   base: "stack-a",
                   url: "u2",
                   draft: false,
+                  body: "",
+                  labels: [],
                 }),
                 pullRef({
                   number: 3,
@@ -6456,6 +6656,8 @@ describe("Stack", () => {
                   base: "stack-b",
                   url: "u3",
                   draft: false,
+                  body: "",
+                  labels: [],
                 }),
               ],
               metas: [
@@ -6758,13 +6960,17 @@ describe("CodeHost", () => {
         expect(yield* host.changes()).toHaveLength(0);
         expect(log).toEqual([
           "create feature/x main",
+          "changes",
           `edit ${created.number} dev`,
           `body ${created.number}`,
+          `change ${created.number}`,
           `auto ${created.number}`,
           `wait ${created.number}`,
           `merge ${created.number}`,
+          "changes",
           "create feature/y dev",
           `close ${closed.number}`,
+          "changes",
         ]);
       }).pipe(Effect.provide(adapter.memory({ log })));
     });
@@ -6795,6 +7001,8 @@ describe("CodeHost", () => {
                 base: "main",
                 url: "u1",
                 draft: false,
+                body: "",
+                labels: [],
                 checks: "pending",
               }),
             ],
@@ -6852,6 +7060,8 @@ describe("StackBlock", () => {
       base: "main",
       url: "u1",
       draft: false,
+      body: "",
+      labels: [],
     }),
     pullRef({
       number: 2,
@@ -6860,6 +7070,8 @@ describe("StackBlock", () => {
       base: "feat/a",
       url: "u2",
       draft: false,
+      body: "",
+      labels: [],
     }),
     pullRef({
       number: 3,
@@ -6868,6 +7080,8 @@ describe("StackBlock", () => {
       base: "feat/b",
       url: "u3",
       draft: false,
+      body: "",
+      labels: [],
     }),
   ];
   const tree = {
@@ -7110,6 +7324,266 @@ describe("StackBlock", () => {
   });
 });
 
+describe("change-detail fan-out", () => {
+  it.effect(
+    "links updates open request stack blocks without any per-request change() fetch",
+    () => {
+      const log: Array<string> = [];
+      const layer = Stack.layer.pipe(
+        Layer.provideMerge(Progress.noop),
+        Layer.provideMerge(cfg),
+        Layer.provideMerge(
+          Git.test({
+            current: "stack-c",
+            remote: "git@github.com:kit/stack.git",
+            refs: [
+              branchRef({ name: "dev", head: "dev" }),
+              branchRef({ name: "stack-a", head: "a" }),
+              branchRef({ name: "stack-b", head: "b" }),
+              branchRef({ name: "stack-c", head: "c" }),
+            ],
+          }),
+        ),
+        Layer.provideMerge(
+          CodeHostGitHub.memory({
+            log,
+            pulls: [
+              pullRef({
+                number: 1,
+                head: "stack-a",
+                base: "dev",
+                url: "u1",
+                draft: false,
+                body: "root body",
+                labels: [],
+              }),
+              pullRef({
+                number: 2,
+                head: "stack-b",
+                base: "stack-a",
+                url: "u2",
+                draft: false,
+                body: "mid body",
+                labels: [],
+              }),
+              pullRef({
+                number: 3,
+                head: "stack-c",
+                base: "stack-b",
+                url: "u3",
+                draft: false,
+                body: "leaf body",
+                labels: [],
+              }),
+            ],
+          }),
+        ),
+        Layer.provideMerge(
+          Store.memory(
+            stackState([
+              stackLink({ branch: "stack-a", parent: "dev", anchor: "dev", pr: 1 }),
+              stackLink({ branch: "stack-b", parent: "stack-a", anchor: "a", pr: 2 }),
+              stackLink({ branch: "stack-c", parent: "stack-b", anchor: "b", pr: 3 }),
+            ]),
+          ),
+        ),
+      );
+
+      return Effect.gen(function* () {
+        const stack = yield* Stack;
+        yield* stack.links(true);
+
+        expect(log.filter((entry) => entry.startsWith("change "))).toEqual([]);
+        expect(log.filter((entry) => entry.startsWith("body ")).sort()).toEqual([
+          "body 1",
+          "body 2",
+          "body 3",
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect("gitlab links fetch only the completed MRs referenced in stack-block history", () => {
+    const log: Array<string> = [];
+    const history = `## Summary
+
+<!-- stack:links:start -->
+### Stack
+
+1. !9 - landed parent
+- **!2**
+<!-- stack:links:end -->
+`;
+    const layer = Stack.layer.pipe(
+      Layer.provideMerge(Progress.noop),
+      Layer.provideMerge(cfg),
+      Layer.provideMerge(
+        Git.test({
+          current: "stack-b",
+          remote: "git@gitlab.com:group/repo.git",
+          refs: [
+            branchRef({ name: "dev", head: "dev" }),
+            branchRef({ name: "stack-b", head: "b" }),
+          ],
+        }),
+      ),
+      Layer.provideMerge(
+        CodeHostGitLab.memory({
+          log,
+          pulls: [
+            pullRef({
+              number: 2,
+              title: "stack-b",
+              head: "stack-b",
+              base: "dev",
+              url: "u2",
+              draft: false,
+              body: history,
+              labels: [],
+            }),
+          ],
+          metas: [
+            pullMeta({
+              number: 9,
+              title: "landed parent",
+              body: "",
+              head: "stack-a",
+              base: "dev",
+              url: "u9",
+              draft: false,
+              state: "merged",
+              labels: [],
+            }),
+          ],
+        }),
+      ),
+      Layer.provideMerge(
+        Store.memory(
+          stackState([stackLink({ branch: "stack-b", parent: "dev", anchor: "dev", pr: 2 })]),
+        ),
+      ),
+    );
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.links(true);
+
+      // Only the completed MR history reference is fetched; the open MR body comes from the list.
+      expect(log.filter((entry) => entry.startsWith("change "))).toEqual(["change 9"]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  const landFetchCounter = (childOpen: boolean) => {
+    const counter = { changes: 0 };
+    const refs = new Map([
+      ["dev", branchRef({ name: "dev", head: "dev-2" })],
+      ["stack-a", branchRef({ name: "stack-a", head: "stack-a-1" })],
+      ["stack-b", branchRef({ name: "stack-b", head: "stack-b-1" })],
+    ]);
+    const bases = new Map([
+      ["stack-a:dev", "dev-1"],
+      ["stack-a:origin/dev", "dev-1"],
+      ["stack-b:stack-a", "stack-a-1"],
+      ["stack-b:dev", "dev-1"],
+      ["stack-b:origin/dev", "dev-1"],
+    ]);
+    let pulls = childOpen
+      ? [pr(1, "stack-a", "dev"), pr(2, "stack-b", "stack-a")]
+      : [pr(1, "stack-a", "dev")];
+    const layer = Stack.layer.pipe(
+      Layer.provideMerge(Progress.noop),
+      Layer.provideMerge(cfg),
+      Layer.provideMerge(
+        gitAndCodeHost({
+          dirty: () => Effect.succeed([]),
+          fetch: () => Effect.void,
+          refs: () => Effect.succeed(Array.from(refs.values())),
+          changes: () =>
+            Effect.sync(() => {
+              counter.changes += 1;
+              return pulls;
+            }),
+          change: (number: number) => {
+            const found = pulls.find((item) => item.number === number);
+            return found
+              ? Effect.succeed(metaFor(found))
+              : Effect.fail(new CodeHostChangeNotFoundError(number));
+          },
+          current: () => Effect.succeed("stack-b"),
+          head: (name: string) =>
+            Effect.succeed(
+              Option.fromNullishOr(
+                refs.get(name)?.head ??
+                  (name.startsWith("origin/") ? refs.get(name.slice(7))?.head : undefined),
+              ),
+            ),
+          base: (branch: string, parent: string) =>
+            Effect.succeed(Option.fromNullishOr(bases.get(`${branch}:${parent}`))),
+          commits: () => Effect.succeed(["x"]),
+          novel: (_p: string, _b: string, commits: ReadonlyArray<string>) =>
+            Effect.succeed(commits),
+          replay: (branch: string, parent: string) =>
+            Effect.sync(() => {
+              refs.set(branch, branchRef({ name: branch, head: `${branch}-2` }));
+              bases.set(
+                `${branch}:${parent}`,
+                refs.get(parent.startsWith("origin/") ? parent.slice(7) : parent)?.head ?? "",
+              );
+            }),
+          backup: () => Effect.void,
+          drop: () => Effect.void,
+          restore: () => Effect.void,
+          release: () => Effect.void,
+          switch: () => Effect.void,
+          push: () => Effect.void,
+          merge: (number: number) =>
+            Effect.sync(() => void (pulls = pulls.filter((item) => item.number !== number))),
+          edit: (number: number, base: string) =>
+            Effect.sync(() => {
+              pulls = pulls.map((item) =>
+                item.number === number ? pr(Number(item.number), String(item.head), base) : item,
+              );
+            }),
+          body: () => Effect.void,
+          create: (branch: string, base: string) =>
+            Effect.sync(() => {
+              const made = pr(5, branch, base);
+              pulls = [...pulls, made];
+              return made;
+            }),
+        }),
+      ),
+      Layer.provideMerge(
+        Store.memory(
+          stackState([
+            stackLink({ branch: "stack-a", parent: "dev", anchor: "dev-1", pr: 1 }),
+            stackLink({ branch: "stack-b", parent: "stack-a", anchor: "stack-a-1", pr: 2 }),
+          ]),
+        ),
+      ),
+    );
+    return { counter, layer };
+  };
+
+  it.effect("merge refetches the change list only when repair changed something host-side", () => {
+    const settled = landFetchCounter(true);
+    const recreated = landFetchCounter(false);
+    return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const stack = yield* Stack;
+        yield* stack.land("stack-a", { apply: true });
+      }).pipe(Effect.provide(settled.layer));
+      yield* Effect.gen(function* () {
+        const stack = yield* Stack;
+        yield* stack.land("stack-a", { apply: true });
+      }).pipe(Effect.provide(recreated.layer));
+
+      // A child rebased in place needs no second list fetch; a recreated child forces one.
+      expect(recreated.counter.changes).toBe(settled.counter.changes + 1);
+    });
+  });
+});
+
 describe("StackGraph trunk display", () => {
   it("treeFromStatus picks the trunk that is actually referenced as a parent", () => {
     const graph = StackGraph.make({
@@ -7119,7 +7593,17 @@ describe("StackGraph trunk display", () => {
         branchRef({ name: "main", head: "m" }),
         branchRef({ name: "feat/a", head: "a" }),
       ],
-      pulls: [pullRef({ number: 1, head: "feat/a", base: "main", url: "u1", draft: false })],
+      pulls: [
+        pullRef({
+          number: 1,
+          head: "feat/a",
+          base: "main",
+          url: "u1",
+          draft: false,
+          body: "",
+          labels: [],
+        }),
+      ],
       trunks: ["dev", "main", "master"],
       current: "feat/a",
     });

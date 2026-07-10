@@ -40,6 +40,7 @@ class PullWatch extends Schema.Class<PullWatch>("PullWatch")({
 class PullListData extends Schema.Class<PullListData>("PullListData")({
   number: Schema.Number,
   title: Schema.String,
+  body: Schema.NullOr(Schema.String),
   head: Schema.Struct({
     ref: Schema.String,
     repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
@@ -47,6 +48,7 @@ class PullListData extends Schema.Class<PullListData>("PullListData")({
   base: Schema.Struct({ ref: Schema.String }),
   html_url: Schema.String,
   draft: Schema.Boolean,
+  labels: Schema.Array(Schema.Struct({ name: Schema.String })),
 }) {}
 
 const PullListJson = Schema.Array(Schema.Array(PullListData));
@@ -91,6 +93,8 @@ const listRef = (row: PullListData) =>
     base: row.base.ref,
     url: row.html_url,
     draft: row.draft,
+    body: row.body ?? "",
+    labels: row.labels.map((item) => new PullLabel({ name: item.name })),
   });
 
 const meta = (row: PullView) =>
@@ -252,6 +256,8 @@ export const layer = Layer.effect(
         base,
         url: created.trim(),
         draft: false,
+        body,
+        labels: labels.map((name) => new PullLabel({ name })),
       });
     });
 
