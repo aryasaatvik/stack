@@ -187,7 +187,7 @@ ${note}`;
             "  3. resolve conflicts, then: git rebase --continue",
             `  4. git push --force-with-lease origin ${rebase.branch}`,
             `  5. stack merge --continue   (campaigns)  /  stack sync --apply ${rebase.branch}`,
-            `  ${rangeBase} is the pre-rewrite parent tip this run backed up — the range base that replays only ${rebase.branch}'s commits. Always rebase onto fresh origin refs, never a stale local trunk.`,
+            `  ${rangeBase} is the pre-rewrite parent tip used as the range base — it replays only ${rebase.branch}'s own commits. Always rebase onto fresh origin refs, never a stale local trunk.`,
             "  or restore the pre-sync state with: stack undo --apply",
             "",
             "Git error:",
