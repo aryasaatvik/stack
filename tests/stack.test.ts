@@ -5140,6 +5140,29 @@ describe("Stack", () => {
     }).pipe(Effect.provide(test.layer));
   });
 
+  it.effect("land auto except with --eager never repairs the excluded subtree", () => {
+    // Eager landings run a full repair after every merge; the repair scope must
+    // still honor the exclusion — stack-d may not be rebased or pushed by any
+    // intermediate pass.
+    const test = makeLand([], "stack-a", null, {}, false, false, true);
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const done = yield* stack.land(undefined, {
+        auto: true,
+        except: "stack-d",
+        eager: true,
+      });
+
+      expect(done).toContain("merged all except: stack-d");
+      expect(test.seen).not.toContain("auto 7");
+      expect(test.seen.filter((item) => item.startsWith("rebase stack-d"))).toHaveLength(0);
+      expect(pushCount(test.seen, "stack-d")).toBe(0);
+      // eager still repairs remaining chain members after intermediate landings.
+      expect(pushCount(test.seen, "stack-c")).toBeGreaterThan(1);
+    }).pipe(Effect.provide(test.layer));
+  });
+
   it.effect("land except guards: through, auto, unknown branch, and the only root", () => {
     const test = makeLand([], "stack-a", null, {}, false, false, true);
 

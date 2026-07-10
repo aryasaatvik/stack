@@ -1959,6 +1959,10 @@ ${note}`;
             //   null      -> repair nothing (last chain root; the campaign's final
             //                pass freshens whatever remains).
             readonly repairOnly?: string | null;
+            // Restricts a full (eager) repair to these branches. --except campaigns
+            // pass their trimmed stack set so eager landings never touch the
+            // excluded subtree. Ignored when repairOnly narrows the scope further.
+            readonly repairScope?: ReadonlySet<string>;
             // Called once the root has merged (after the post-merge baseline is
             // written), before descendant repair. Campaigns use it to promote the
             // landing into persisted campaign state so a repair conflict leaves the
@@ -1975,6 +1979,7 @@ ${note}`;
             const auto = opts?.auto ?? false;
             const admin = opts?.admin ?? false;
             const repairOnly = opts?.repairOnly;
+            const repairScope = opts?.repairScope;
             const onLanded = opts?.onLanded;
             if (apply && auto) {
               return yield* Effect.fail(
@@ -2140,7 +2145,9 @@ ${note}`;
             const repairCheckBranches =
               repairOnly === undefined
                 ? plannedRepair.actions.flatMap((item) =>
-                    item._tag === "Rebase" ? [String(item.branch)] : [],
+                    item._tag === "Rebase" && (!repairScope || repairScope.has(String(item.branch)))
+                      ? [String(item.branch)]
+                      : [],
                   )
                 : repairOnly === null
                   ? []
@@ -2169,7 +2176,9 @@ ${note}`;
             // repair only the next root's link joins it, deferring the rest.
             const repairScopeState =
               repairOnly === undefined
-                ? scopedState
+                ? repairScope
+                  ? filterState(scopedState, new Set([target, ...repairScope]))
+                  : scopedState
                 : filterState(
                     scopedState,
                     new Set(repairOnly === null ? [target] : [target, repairOnly]),
@@ -2178,7 +2187,9 @@ ${note}`;
             // when eager, just the next root when lazy, nothing for the last root.
             const writeScope =
               repairOnly === undefined
-                ? branches
+                ? repairScope
+                  ? new Set<string>(repairScope)
+                  : branches
                 : new Set<string>(repairOnly === null ? [] : [repairOnly]);
             const repairAfterMerge = Effect.fn("Stack.land.repairAfterMerge")(() =>
               Effect.gen(function* () {
@@ -2345,6 +2356,7 @@ ${note}`;
                 ...(yield* landOne(target, {
                   auto: true,
                   ...(repairOnly === undefined ? {} : { repairOnly }),
+                  ...(input.eager ? { repairScope: new Set(input.stack) } : {}),
                   onLanded: (info) =>
                     Effect.gen(function* () {
                       landed = [...landed, campaignLanding(info)];
