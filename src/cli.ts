@@ -47,6 +47,13 @@ const through = Flag.string("through").pipe(
   Flag.optional,
 );
 
+const except = Flag.string("except").pipe(
+  Flag.withDescription(
+    "With --auto, land every root in the stack except the named branch or change and its descendants. Mutually exclusive with --through.",
+  ),
+  Flag.optional,
+);
+
 const eager = Flag.boolean("eager").pipe(
   Flag.withDescription(
     "Repair the full remaining chain after every landing instead of only the next root. Restores pre-lazy churn; use it to keep every open change's diff current while the campaign runs.",
@@ -55,7 +62,7 @@ const eager = Flag.boolean("eager").pipe(
 
 const continueCampaign = Flag.boolean("continue").pipe(
   Flag.withDescription(
-    "Resume the saved --through campaign from the recorded next root after a manual conflict fix. Cannot be combined with a branch argument or --through.",
+    "Resume the saved --through or --except campaign from the recorded next root after a manual conflict fix. Cannot be combined with a branch argument, --through, or --except.",
   ),
 );
 
@@ -200,12 +207,14 @@ const mergeCommand = Command.make(
     auto,
     admin,
     through,
+    except,
     eager,
     continue: continueCampaign,
   },
-  Effect.fn(function* ({ branch, apply, auto, admin, through, eager, continue: resume }) {
+  Effect.fn(function* ({ branch, apply, auto, admin, through, except, eager, continue: resume }) {
     const stack = yield* Stack;
     const throughValue = Option.getOrUndefined(through);
+    const exceptValue = Option.getOrUndefined(except);
     const items = yield* stack.land(Option.getOrUndefined(branch), {
       apply,
       auto,
@@ -213,12 +222,13 @@ const mergeCommand = Command.make(
       eager,
       continue: resume,
       ...(throughValue === undefined ? {} : { through: throughValue }),
+      ...(exceptValue === undefined ? {} : { except: exceptValue }),
     });
     yield* Console.log(items.join("\n"));
   }),
 ).pipe(
   Command.withDescription(
-    "Merge the oldest branch in a stack, preserve a local backup branch, repair descendants, and print the next root branch. If branch is omitted, infer the root from the current branch. By default this is a dry run. Add --apply to merge immediately, --apply --admin to force with admin privileges (GitHub only), or --auto to enable code-host auto-merge and wait until it lands before repairing descendants. Add --auto --through <branch-or-change> to land a chain of roots; each landing repairs only the next root (grandchildren wait their turn) with one final full repair pass over anything still open. Add --eager to repair the whole remaining chain after every landing, or --continue to resume a campaign that stopped on a conflict.",
+    "Merge the oldest branch in a stack, preserve a local backup branch, repair descendants, and print the next root branch. If branch is omitted, infer the root from the current branch. By default this is a dry run. Add --apply to merge immediately, --apply --admin to force with admin privileges (GitHub only), or --auto to enable code-host auto-merge and wait until it lands before repairing descendants. Add --auto --through <branch-or-change> to land only the roots on the chain to that target; each landing repairs only the next root (grandchildren wait their turn) with one final full repair pass over anything still open. Sibling subtrees that branch off the chain are never merged by --through — under lazy repair they are not rebased until that final pass. Add --auto --except <branch-or-change> instead to land every root in the stack except that branch and its descendants (they keep their history and wait for their own campaign); --through and --except are mutually exclusive. Add --eager to repair the whole remaining chain after every landing, or --continue to resume a campaign that stopped on a conflict.",
   ),
   Command.withExamples([
     {
@@ -245,6 +255,11 @@ const mergeCommand = Command.make(
     {
       command: "stack merge --auto --through effectify-format --eager",
       description: "Same campaign, but repair every remaining open change after each landing",
+    },
+    {
+      command: "stack merge --auto --except effectify-docs",
+      description:
+        "Land the whole stack except effectify-docs and its descendants, which stay open for later",
     },
     {
       command: "stack merge --continue",

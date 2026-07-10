@@ -52,6 +52,7 @@ export interface StackService {
       readonly auto?: boolean;
       readonly admin?: boolean;
       readonly through?: string;
+      readonly except?: string;
       readonly eager?: boolean;
       readonly continue?: boolean;
     },
@@ -1895,6 +1896,44 @@ ${note}`;
           }),
       );
 
+      // Resolve `merge --auto --except <branch-or-change>`: land the whole stack in
+      // its natural (parent-before-child) landing order minus the named subtree.
+      // The excluded subtree is dropped from both the landing chain and the final
+      // repair pass's scope (`stack`), so those branches are never rebased or
+      // pushed — a landed parent still retargets them to trunk (pre-merge) so their
+      // requests survive, but their history waits for their own campaign.
+      const exceptTarget = Effect.fn("Stack.land.exceptTarget")(
+        (branch: string | undefined, except: string) =>
+          Effect.gen(function* () {
+            const { state, pulls, target } = yield* landTarget(branch);
+            const input = except.trim();
+            const prText = input.startsWith("#") || input.startsWith("!") ? input.slice(1) : input;
+            const prNumber = /^\d+$/.test(prText) ? Number(prText) : null;
+            const byPr = prNumber
+              ? (pulls.find((item) => Number(item.number) === prNumber)?.head ??
+                state.links.find((item) => Number(item.pr) === prNumber)?.branch ??
+                null)
+              : null;
+            const exceptBranch = byPr ? String(byPr) : input;
+            // DFS preorder over the whole stack from the root is a valid landing
+            // order (each parent precedes its children).
+            const full = [...scopedBranches(state, target)];
+            if (!full.includes(exceptBranch)) {
+              return yield* Effect.fail(
+                new StackOperationError(`${except} is not in the current stack from ${target}`),
+              );
+            }
+            const excluded = scopedBranches(state, exceptBranch);
+            const chain = full.filter((item) => !excluded.has(item));
+            if (chain.length === 0) {
+              return yield* Effect.fail(
+                new StackOperationError(`excluding ${exceptBranch} leaves nothing to merge`),
+              );
+            }
+            return { except: exceptBranch, chain, stack: chain };
+          }),
+      );
+
       const landOne = Effect.fn("Stack.landOne")(
         (
           branch?: string,
@@ -2261,6 +2300,7 @@ ${note}`;
       const runCampaign = Effect.fn("Stack.land.runCampaign")(
         (input: {
           readonly through: string;
+          readonly except?: string;
           readonly eager: boolean;
           readonly chain: ReadonlyArray<string>;
           readonly stack: ReadonlyArray<string>;
@@ -2274,6 +2314,7 @@ ${note}`;
                 campaignState({
                   at: stamp,
                   through: input.through,
+                  ...(input.except === undefined ? {} : { except: input.except }),
                   eager: input.eager,
                   chain: input.chain,
                   stack: input.stack,
@@ -2307,7 +2348,11 @@ ${note}`;
               if (tail.length > 0) items.push("", ...tail);
             }
             yield* store.clearCampaign();
-            items.push(`merged through: ${input.through}`);
+            items.push(
+              input.except === undefined
+                ? `merged through: ${input.through}`
+                : `merged all except: ${input.except}`,
+            );
             return items;
           }),
       );
@@ -2326,6 +2371,13 @@ ${note}`;
               return yield* Effect.fail(
                 new StackOperationError(
                   "merge --continue resumes the saved campaign; drop --through (the campaign owns it)",
+                ),
+              );
+            }
+            if (opts.except !== undefined) {
+              return yield* Effect.fail(
+                new StackOperationError(
+                  "merge --continue resumes the saved campaign; drop --except (the campaign owns it)",
                 ),
               );
             }
@@ -2363,6 +2415,7 @@ ${note}`;
             }
             return yield* runCampaign({
               through: String(campaign.through),
+              ...(campaign.except === undefined ? {} : { except: String(campaign.except) }),
               eager: campaign.eager,
               chain: campaign.chain.map(String),
               stack: campaign.stack.map(String),
@@ -2371,6 +2424,31 @@ ${note}`;
           }
 
           const through = opts?.through;
+          const except = opts?.except;
+
+          if (through !== undefined && except !== undefined) {
+            return yield* Effect.fail(
+              new StackOperationError("use either --through or --except, not both"),
+            );
+          }
+
+          if (except !== undefined) {
+            if (!opts?.auto) {
+              return yield* Effect.fail(new StackOperationError("use --except only with --auto"));
+            }
+            const resolved = yield* exceptTarget(branch, except);
+            return yield* runCampaign({
+              // The final landed root labels the journal (a real BranchName);
+              // `except` carries the excluded subtree for the completion message.
+              through: resolved.chain[resolved.chain.length - 1]!,
+              except: resolved.except,
+              eager: opts?.eager ?? false,
+              chain: resolved.chain,
+              stack: resolved.stack,
+              landed: [],
+            });
+          }
+
           if (!through) {
             return yield* landOne(branch, {
               apply: opts?.apply ?? false,

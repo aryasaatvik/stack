@@ -99,6 +99,10 @@ export class CampaignState extends Schema.Class<CampaignState>("CampaignState")(
   version: Schema.Literal(version),
   at: Schema.String,
   through: BranchName,
+  // Present only for `--except` campaigns: the excluded subtree root. The chain
+  // and stack already omit it; this records intent for the completion message
+  // and `--continue` resume.
+  except: Schema.optional(BranchName),
   eager: Schema.Boolean,
   chain: Schema.Array(BranchName),
   stack: Schema.Array(BranchName),
@@ -422,6 +426,7 @@ export const campaignLanding = (value: {
 export const campaignState = (value: {
   at: string;
   through: string;
+  except?: string;
   eager: boolean;
   chain: ReadonlyArray<string>;
   stack: ReadonlyArray<string>;
@@ -431,6 +436,7 @@ export const campaignState = (value: {
     version,
     at: value.at,
     through: branchName(value.through),
+    ...(value.except === undefined ? {} : { except: branchName(value.except) }),
     eager: value.eager,
     chain: value.chain.map((name) => branchName(name)),
     stack: value.stack.map((name) => branchName(name)),
