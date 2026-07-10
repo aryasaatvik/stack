@@ -202,23 +202,34 @@ export const layer = Layer.effect(
       yield* run(["mr", "merge", `${pr}`, "--auto-merge=false", "--squash", "--yes"]);
     });
 
-    const wait = Effect.fn("CodeHost.gitlab.wait")((pr: number) =>
-      Effect.gen(function* () {
-        for (;;) {
-          const args = ["mr", "view", `${pr}`, "-F", "json"];
-          const out = yield* run(args);
-          const row = yield* decodeMRWatch(args, out);
+    const wait = Effect.fn("CodeHost.gitlab.wait")(
+      (pr: number, onPoll?: (elapsedMillis: number) => Effect.Effect<void>) =>
+        Effect.gen(function* () {
+          let interval = cfg.codeHostWaitIntervalMillis;
+          let elapsed = 0;
+          for (;;) {
+            const args = ["mr", "view", `${pr}`, "-F", "json"];
+            const out = yield* run(args);
+            const row = yield* decodeMRWatch(args, out);
 
-          if (row.merged_at || row.state === "merged") return;
-          if (row.state === "closed") {
-            return yield* Effect.fail(
-              new ExecError("glab", ["mr", "view", `${pr}`], 1, `MR !${pr} closed without merging`),
-            );
+            if (row.merged_at || row.state === "merged") return;
+            if (row.state === "closed") {
+              return yield* Effect.fail(
+                new ExecError(
+                  "glab",
+                  ["mr", "view", `${pr}`],
+                  1,
+                  `MR !${pr} closed without merging`,
+                ),
+              );
+            }
+
+            yield* Effect.sleep(interval);
+            elapsed += interval;
+            if (onPoll) yield* onPoll(elapsed);
+            interval = Math.min(interval * 2, cfg.codeHostWaitMaxIntervalMillis);
           }
-
-          yield* Effect.sleep(cfg.codeHostWaitIntervalMillis);
-        }
-      }),
+        }),
     );
 
     const merged = Effect.fn("CodeHost.gitlab.merged")((pr: number) =>

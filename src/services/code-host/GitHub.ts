@@ -171,23 +171,29 @@ export const layer = Layer.effect(
         ),
     );
 
-    const wait = Effect.fn("CodeHost.github.wait")((pr: number) =>
-      Effect.gen(function* () {
-        for (;;) {
-          const args = ["pr", "view", `${pr}`, "--json", "state,mergedAt"];
-          const out = yield* run(args);
-          const row = yield* decodePullWatch(args, out);
+    const wait = Effect.fn("CodeHost.github.wait")(
+      (pr: number, onPoll?: (elapsedMillis: number) => Effect.Effect<void>) =>
+        Effect.gen(function* () {
+          let interval = cfg.codeHostWaitIntervalMillis;
+          let elapsed = 0;
+          for (;;) {
+            const args = ["pr", "view", `${pr}`, "--json", "state,mergedAt"];
+            const out = yield* run(args);
+            const row = yield* decodePullWatch(args, out);
 
-          if (row.mergedAt) return;
-          if (row.state !== "OPEN") {
-            return yield* Effect.fail(
-              new ExecError("gh", ["pr", "view", `${pr}`], 1, `PR #${pr} closed without merging`),
-            );
+            if (row.mergedAt) return;
+            if (row.state !== "OPEN") {
+              return yield* Effect.fail(
+                new ExecError("gh", ["pr", "view", `${pr}`], 1, `PR #${pr} closed without merging`),
+              );
+            }
+
+            yield* Effect.sleep(interval);
+            elapsed += interval;
+            if (onPoll) yield* onPoll(elapsed);
+            interval = Math.min(interval * 2, cfg.codeHostWaitMaxIntervalMillis);
           }
-
-          yield* Effect.sleep(cfg.codeHostWaitIntervalMillis);
-        }
-      }),
+        }),
     );
 
     const merged = Effect.fn("CodeHost.github.merged")((pr: number) =>

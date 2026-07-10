@@ -20,7 +20,10 @@ export interface Interface {
     pr: number,
     opts?: { readonly admin?: boolean },
   ) => Effect.Effect<void, CodeHostError>;
-  readonly wait: (pr: number) => Effect.Effect<void, CodeHostError>;
+  readonly wait: (
+    pr: number,
+    onPoll?: (elapsedMillis: number) => Effect.Effect<void>,
+  ) => Effect.Effect<void, CodeHostError>;
   readonly merged: (pr: number) => Effect.Effect<boolean, CodeHostError>;
   readonly changes: () => Effect.Effect<ReadonlyArray<PullRef>, CodeHostError>;
   readonly change: (number: number) => Effect.Effect<PullMeta, CodeHostError>;

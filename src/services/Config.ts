@@ -31,6 +31,7 @@ export interface StackConfigService {
   readonly blockLink: boolean;
   readonly codeHostConcurrency: number;
   readonly codeHostWaitIntervalMillis: number;
+  readonly codeHostWaitMaxIntervalMillis: number;
 }
 
 export class StackConfig extends Context.Service<StackConfig, StackConfigService>()(
@@ -45,6 +46,7 @@ export class StackConfig extends Context.Service<StackConfig, StackConfigService
     blockLink?: boolean | undefined;
     codeHostConcurrency?: number;
     codeHostWaitIntervalMillis?: number;
+    codeHostWaitMaxIntervalMillis?: number;
   }) =>
     Layer.effect(
       StackConfig,
@@ -59,6 +61,7 @@ export class StackConfig extends Context.Service<StackConfig, StackConfigService
           blockLink: opts.blockLink ?? true,
           codeHostConcurrency: opts.codeHostConcurrency ?? 4,
           codeHostWaitIntervalMillis: opts.codeHostWaitIntervalMillis ?? 5_000,
+          codeHostWaitMaxIntervalMillis: opts.codeHostWaitMaxIntervalMillis ?? 30_000,
         });
       }),
     );
