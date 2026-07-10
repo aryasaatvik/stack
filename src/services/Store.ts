@@ -5,7 +5,14 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import { stackState, StackState, type StoreError, StateError, UndoState } from "../domain/model.ts";
+import {
+  CampaignState,
+  stackState,
+  StackState,
+  type StoreError,
+  StateError,
+  UndoState,
+} from "../domain/model.ts";
 import { StackConfig } from "./Config.ts";
 
 export interface StoreService {
@@ -14,6 +21,9 @@ export interface StoreService {
   readonly readUndo: () => Effect.Effect<UndoState | null, StoreError>;
   readonly writeUndo: (state: UndoState) => Effect.Effect<void, StoreError>;
   readonly clearUndo: () => Effect.Effect<void, StoreError>;
+  readonly readCampaign: () => Effect.Effect<CampaignState | null, StoreError>;
+  readonly writeCampaign: (state: CampaignState) => Effect.Effect<void, StoreError>;
+  readonly clearCampaign: () => Effect.Effect<void, StoreError>;
 }
 
 const empty = () => stackState([]);
@@ -90,7 +100,32 @@ export class Store extends Context.Service<Store, StoreService>()("@stack/Store"
         fs.remove(cfg.journal).pipe(Effect.catchTag("PlatformError", () => Effect.void)),
       );
 
-      return Store.of({ read, write, readUndo, writeUndo, clearUndo });
+      const readCampaign = Effect.fn("Store.readCampaign")(() =>
+        load(
+          cfg.campaign,
+          () => null,
+          (raw) => Schema.decodeUnknownSync(CampaignState)(JSON.parse(raw)),
+        ),
+      );
+
+      const writeCampaign = Effect.fn("Store.writeCampaign")((state: CampaignState) =>
+        save(cfg.campaign, state, Schema.encodeSync(CampaignState)),
+      );
+
+      const clearCampaign = Effect.fn("Store.clearCampaign")(() =>
+        fs.remove(cfg.campaign).pipe(Effect.catchTag("PlatformError", () => Effect.void)),
+      );
+
+      return Store.of({
+        read,
+        write,
+        readUndo,
+        writeUndo,
+        clearUndo,
+        readCampaign,
+        writeCampaign,
+        clearCampaign,
+      });
     }),
   );
 
@@ -100,14 +135,29 @@ export class Store extends Context.Service<Store, StoreService>()("@stack/Store"
       Effect.gen(function* () {
         const ref = yield* Ref.make(state);
         const undo = yield* Ref.make<UndoState | null>(null);
+        const campaign = yield* Ref.make<CampaignState | null>(null);
 
         const read = Effect.fn("Store.read")(() => Ref.get(ref));
         const write = Effect.fn("Store.write")((next: StackState) => Ref.set(ref, next));
         const readUndo = Effect.fn("Store.readUndo")(() => Ref.get(undo));
         const writeUndo = Effect.fn("Store.writeUndo")((next: UndoState) => Ref.set(undo, next));
         const clearUndo = Effect.fn("Store.clearUndo")(() => Ref.set(undo, null));
+        const readCampaign = Effect.fn("Store.readCampaign")(() => Ref.get(campaign));
+        const writeCampaign = Effect.fn("Store.writeCampaign")((next: CampaignState) =>
+          Ref.set(campaign, next),
+        );
+        const clearCampaign = Effect.fn("Store.clearCampaign")(() => Ref.set(campaign, null));
 
-        return Store.of({ read, write, readUndo, writeUndo, clearUndo });
+        return Store.of({
+          read,
+          write,
+          readUndo,
+          writeUndo,
+          clearUndo,
+          readCampaign,
+          writeCampaign,
+          clearCampaign,
+        });
       }),
     );
 }

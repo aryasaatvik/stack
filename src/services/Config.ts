@@ -26,6 +26,7 @@ export interface StackConfigService {
   readonly root: string;
   readonly store: string;
   readonly journal: string;
+  readonly campaign: string;
   readonly trunks: ReadonlyArray<BranchName>;
   readonly blockLink: boolean;
   readonly codeHostConcurrency: number;
@@ -39,6 +40,7 @@ export class StackConfig extends Context.Service<StackConfig, StackConfigService
     root: string;
     store?: string;
     journal?: string;
+    campaign?: string;
     trunks?: ReadonlyArray<string>;
     blockLink?: boolean | undefined;
     codeHostConcurrency?: number;
@@ -52,6 +54,7 @@ export class StackConfig extends Context.Service<StackConfig, StackConfigService
           root: opts.root,
           store: opts.store ?? path.join(opts.root, ".git", "stack", "state.json"),
           journal: opts.journal ?? path.join(opts.root, ".git", "stack", "undo.json"),
+          campaign: opts.campaign ?? path.join(opts.root, ".git", "stack", "campaign.json"),
           trunks: (opts.trunks ?? trunks).map((name) => branchName(name)),
           blockLink: opts.blockLink ?? true,
           codeHostConcurrency: opts.codeHostConcurrency ?? 4,

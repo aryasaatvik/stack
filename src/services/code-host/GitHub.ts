@@ -190,6 +190,15 @@ export const layer = Layer.effect(
       }),
     );
 
+    const merged = Effect.fn("CodeHost.github.merged")((pr: number) =>
+      Effect.gen(function* () {
+        const args = ["pr", "view", `${pr}`, "--json", "state,mergedAt"];
+        const out = yield* run(args);
+        const row = yield* decodePullWatch(args, out);
+        return row.mergedAt !== null;
+      }),
+    );
+
     const edit = Effect.fn("CodeHost.github.edit")((pr: number, base: string) =>
       run(["pr", "edit", `${pr}`, "--base", base]).pipe(Effect.asVoid),
     );
@@ -245,6 +254,7 @@ export const layer = Layer.effect(
       auto,
       merge,
       wait,
+      merged,
       changes,
       change,
       edit,
