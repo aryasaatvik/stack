@@ -912,11 +912,6 @@ ${note}`;
                   name.startsWith("backup/landed-") || name.startsWith("backup/stack-sync-"),
               )
               .sort();
-            const landedBackupHeads = new Set(
-              refs
-                .filter((ref) => ref.name.startsWith("backup/landed-"))
-                .map((ref) => String(ref.head)),
-            );
             for (const name of backups) {
               for (const link of state.links) {
                 if (name.endsWith(`-${link.branch}`)) prior.set(String(link.branch), name);
@@ -1147,11 +1142,27 @@ ${note}`;
                   headRepository,
                   pr ? Number(pr.number) : link.pr ? Number(link.pr) : null,
                 );
-                const landedAnchor =
-                  trunk(parent) && landedBackupHeads.has(String(link.anchor))
+                // Replay-range base preference, most precise first:
+                //   1. same-run rewrites — `replayAnchors` (this run retargeted the
+                //      child off an untracked parent) and `saved` backups (this run
+                //      rebased the parent, folded into `from` below): exact old-parent
+                //      tips recorded this run.
+                //   2. persisted `link.anchor` when it is still an ancestor of the
+                //      child — the parent tip the child was last made consistent with.
+                //      Preferring it over merge-base means a manual parent rewrite
+                //      between runs replays exactly the child's own commits instead of
+                //      the rewritten-parent commits a wide merge-base range would drag
+                //      in (whose patches no longer apply).
+                //   3. merge-base(child, from) fallback.
+                const replayAnchor = replayAnchors.get(String(link.branch));
+                const persistedAnchor =
+                  replayAnchor === undefined &&
+                  !saved.has(String(link.parent)) &&
+                  link.anchor !== "" &&
+                  (yield* git.ancestor(String(link.anchor), String(link.branch)))
                     ? String(link.anchor)
                     : null;
-                const anchor = replayAnchors.get(String(link.branch)) ?? landedAnchor;
+                const anchor = replayAnchor ?? persistedAnchor;
                 const baseRef = anchor ? Option.some(anchor) : yield* git.base(link.branch, from);
                 const commitsToReplay = Option.isSome(baseRef)
                   ? yield* Effect.gen(function* () {
