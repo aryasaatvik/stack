@@ -291,6 +291,15 @@ ${note}`;
           list.push(top);
           anchors.set(parentOf(top), list);
         }
+        // Render anchor groups in trunk config order first, then remaining
+        // parents alphabetically, so multi-trunk output follows stack.trunks.
+        const anchorRank = (parent: string) => {
+          const index = trunkNames.indexOf(parent);
+          return index >= 0 ? index : trunkNames.length;
+        };
+        const orderedAnchors = [...anchors.entries()].sort(
+          ([a], [b]) => anchorRank(a) - anchorRank(b) || a.localeCompare(b),
+        );
         const trunkName =
           trunkNames.find((name) => (children.get(name) ?? []).length > 0) ??
           trunkNames[0] ??
@@ -309,7 +318,7 @@ ${note}`;
             walk(child, `${prefix}${last ? "   " : "│  "}`, index === kids.length - 1),
           );
         };
-        for (const [parent, groupTops] of anchors) {
+        for (const [parent, groupTops] of orderedAnchors) {
           lines.push(`● ${parent}`);
           groupTops.forEach((top, index) => walk(top, "", index === groupTops.length - 1));
         }
