@@ -55,6 +55,12 @@ stack sync --apply      # record links, repair, retarget, refresh stack blocks
 That's the common loop. `stack sync` previews; `stack sync --apply` does the
 work. Repeat after any parent branch changes or a squash merge lands.
 
+Adding a child branch **before its PR/MR exists**? Record it with
+`stack track <branch> --onto <parent>` so `stack sync`/`stack status` can see the
+topology. Do **not** open a draft PR just to give sync something to infer — a
+draft anchor pollutes the review flow (review bots skip drafts) and is never
+needed; `stack track` is the supported way to join a pre-PR child to the stack.
+
 ## Commands
 
 - `stack status` — show the current stack graph (hides backups, includes open
@@ -86,15 +92,23 @@ work. Repeat after any parent branch changes or a squash merge lands.
   descendants.
 - `stack merge --auto` — retarget children, enable code-host auto-merge, wait,
   then repair descendants.
-- `stack merge --auto --through <branch-or-change>` — land a chain of roots one at
-  a time until the target lands. Repair is lazy: after each landing only the next
-  root is rebased+pushed (grandchildren and siblings wait their turn), and one
-  final repair pass freshens whatever is still open at the end. This avoids
+- `stack merge --auto --through <branch-or-change>` — land only the roots on the
+  chain to the target, one at a time until the target lands. Sibling subtrees that
+  branch off the chain are never merged by `--through`; under lazy repair they are
+  not rebased until the final pass. Repair is lazy: after each landing only the next
+  root is rebased+pushed (grandchildren and off-chain siblings wait their turn), and
+  one final repair pass freshens whatever is still open at the end. This avoids
   force-pushing every open change after every merge (which re-triggers review
   bots). Add `--eager` to repair the whole remaining chain after every landing.
-- `stack merge --continue` — resume a `--through` campaign that stopped on a
-  replay conflict. Trusts the recorded landed roots and picks up from the next
-  root; combine it with neither a branch argument nor `--through`.
+- `stack merge --auto --except <branch-or-change>` — the inverse of `--through`:
+  land every root in the stack **except** that branch and its descendants. The
+  excluded subtree keeps its history and open changes and is never rebased or
+  pushed — it waits for its own later campaign. Use this for "land everything
+  except X" on a forked stack. Mutually exclusive with `--through`.
+- `stack merge --continue` — resume a `--through` or `--except` campaign that
+  stopped on a replay conflict. Trusts the recorded landed roots and picks up from
+  the next root; combine it with neither a branch argument, `--through`, nor
+  `--except`.
 - `stack history` — show the most recent applied repair journal.
 - `stack undo` — dry-run restore of the last applied mutation.
 - `stack undo --apply` — restore branch tips, change targets, and stack metadata.
@@ -132,9 +146,35 @@ The current change is bold with `👈 current`. GitHub uses `#123`; GitLab uses
   sibling owners fail before mutation.
 - If a replay fails, the tool aborts the cherry-pick, restores the original
   branch, keeps backups and the undo journal, and tells you which branch to
-  repair. During a `--through` campaign it also saves campaign state pointing at
-  the failed root: fix and push that branch, then run `stack merge --continue`
-  to resume the remaining landings instead of re-running the whole command.
-  Outside a campaign, repair the branch and run `stack sync --apply` again.
+  repair. During a `--through` or `--except` campaign it also saves campaign state
+  pointing at the failed root: fix and push that branch, then run
+  `stack merge --continue` to resume the remaining landings instead of re-running
+  the whole command. Outside a campaign, repair the branch and run
+  `stack sync --apply` again.
 - If output is unclear, inspect with `stack status`, `stack history`, or command
   help before applying.
+
+## Manual Recovery After a Replay Conflict
+
+When a replay conflict hands you back to git, the failure output already prints
+the exact recipe. The key is to replay **only the failed branch's own commits**
+onto its new parent, using the backup ref the run just created as the range base
+(it is the pre-rewrite parent tip), and always against **freshly fetched** refs —
+a rebase built on a stale local trunk succeeds locally but breaks a merge one or
+two PRs later.
+
+```bash
+git fetch origin
+git rebase --onto <new-parent> <backup-ref-just-created> <branch>
+# resolve conflicts, then:
+git rebase --continue
+git push --force-with-lease origin <branch>
+stack merge --continue          # inside a campaign
+# or, outside a campaign:
+stack sync --apply <branch>
+```
+
+The `backup/...` refs the tool creates are exactly the old-parent-tip registry:
+using one as the `git rebase --onto` range base replays a branch's unique commits
+cleanly, where a wide merge-base range would drag in rewritten-parent commits and
+conflict. Never rebase onto a stale local trunk — fetch first.
