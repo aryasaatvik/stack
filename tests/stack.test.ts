@@ -10,7 +10,6 @@ import {
   campaignLanding,
   campaignState,
   CodeHostChangeNotFoundError,
-  DirtyWorktreeError,
   ExecError,
   PullLabel,
   pullMeta,
@@ -450,7 +449,7 @@ const realStack = (opts: {
   });
 
 const cfg = StackConfig.layer({ root: "/tmp/stack", trunks: ["dev"] }).pipe(
-  Layer.provide(NodeServices.layer),
+  Layer.provideMerge(NodeServices.layer),
 );
 
 const platform = Proc.live.pipe(Layer.provideMerge(NodeServices.layer));
@@ -1393,19 +1392,108 @@ describe("StackGraph", () => {
 });
 
 describe("Git", () => {
-  it.effect("replay restores current branch and deletes temp branch after failure", () => {
-    const calls: Array<ReadonlyArray<string>> = [];
+  it.effect("replay of an unowned branch runs in an ephemeral workbench worktree", () => {
+    const calls: Array<{ cwd: string; args: ReadonlyArray<string> }> = [];
     const proc = Layer.succeed(
       Proc.Service,
       Proc.Service.of({
-        exec: (_cwd, tool, args) =>
+        exec: (cwd, tool, args) =>
+          Effect.sync(() => {
+            calls.push({ cwd, args: [tool, ...args] });
+            return "";
+          }),
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const git = yield* Git.Service;
+      yield* git.replay("stack-b", "dev", ["b1"]);
+
+      const add = calls.find((call) => call.args[1] === "worktree" && call.args[2] === "add");
+      const workbench = add?.args[4];
+      expect(workbench).toBeTruthy();
+      expect(add?.cwd).toBe("/tmp/stack");
+
+      const args = calls.map((call) => call.args);
+      expect(args).toEqual([
+        ["git", "worktree", "list", "--porcelain", "-z"],
+        ["git", "worktree", "add", "--detach", workbench, "dev"],
+        ["git", "cherry-pick", "--empty=drop", "b1"],
+        ["git", "branch", "-f", "stack-b", "HEAD"],
+        ["git", "cherry-pick", "--abort"],
+        ["git", "worktree", "remove", "--force", workbench],
+      ]);
+
+      const branchForce = calls.find((call) => call.args[1] === "branch" && call.args[2] === "-f");
+      expect(branchForce?.cwd).toBe(workbench);
+      expect(calls.some((call) => call.args[1] === "checkout")).toBe(false);
+      expect(calls.some((call) => call.args[1] === "reset")).toBe(false);
+      expect(calls.every((call) => call.cwd !== "/tmp/stack" || call.args[1] === "worktree")).toBe(
+        true,
+      );
+    }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
+  });
+
+  it.effect("replay conflict on the workbench aborts and removes the workbench", () => {
+    const calls: Array<{ cwd: string; args: ReadonlyArray<string> }> = [];
+    const proc = Layer.succeed(
+      Proc.Service,
+      Proc.Service.of({
+        exec: (cwd, tool, args) =>
           Effect.gen(function* () {
-            calls.push([tool, ...args]);
-            if (args[0] === "branch" && args[1] === "--show-current") {
-              return "stack-c";
-            }
+            calls.push({ cwd, args: [tool, ...args] });
             if (args[0] === "cherry-pick" && args[1] !== "--abort") {
               return yield* Effect.fail(new ExecError(tool, args, 1, "conflict"));
+            }
+            if (args[0] === "diff") return "conflicted.txt";
+            return "";
+          }),
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const git = yield* Git.Service;
+      const error = yield* Effect.flip(git.replay("stack-b", "dev", ["b1"]));
+
+      expect(error).toBeInstanceOf(ReplayConflictError);
+      const add = calls.find((call) => call.args[1] === "worktree" && call.args[2] === "add");
+      const workbench = add?.args[4];
+      const args = calls.map((call) => call.args);
+      expect(args).toEqual([
+        ["git", "worktree", "list", "--porcelain", "-z"],
+        ["git", "worktree", "add", "--detach", workbench, "dev"],
+        ["git", "cherry-pick", "--empty=drop", "b1"],
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        ["git", "cherry-pick", "--abort"],
+        ["git", "worktree", "remove", "--force", workbench],
+      ]);
+      const abort = calls.find((call) => call.args[0] === "git" && call.args[2] === "--abort");
+      expect(abort?.cwd).toBe(workbench);
+      expect(calls.some((call) => call.args[1] === "branch" && call.args[2] === "-f")).toBe(false);
+    }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
+  });
+
+  it.effect("replay retries once after a stale already-used-by-worktree error", () => {
+    const calls: Array<{ cwd: string; args: ReadonlyArray<string> }> = [];
+    let worktreeListCount = 0;
+    let addAttempts = 0;
+    const proc = Layer.succeed(
+      Proc.Service,
+      Proc.Service.of({
+        exec: (cwd, tool, args) =>
+          Effect.gen(function* () {
+            calls.push({ cwd, args: [tool, ...args] });
+            if (args[0] === "worktree" && args[1] === "list") {
+              worktreeListCount += 1;
+              return "";
+            }
+            if (args[0] === "worktree" && args[1] === "add") {
+              addAttempts += 1;
+              if (addAttempts === 1) {
+                return yield* Effect.fail(
+                  new ExecError(tool, args, 128, "fatal: 'dev' is already used by worktree at /x"),
+                );
+              }
             }
             return "";
           }),
@@ -1413,24 +1501,83 @@ describe("Git", () => {
     );
 
     return Effect.gen(function* () {
-      yield* TestClock.setTime(1_700_000_000_000);
       const git = yield* Git.Service;
+      yield* git.replay("stack-b", "dev", ["b1"]);
 
-      const error = yield* Effect.flip(git.replay("stack-b", "dev", ["b1"]));
+      // one snapshot for the first attempt, a fresh snapshot after invalidation for the retry
+      expect(worktreeListCount).toBe(2);
+      expect(addAttempts).toBe(2);
+      const branchForce = calls.filter(
+        (call) => call.args[1] === "branch" && call.args[2] === "-f",
+      );
+      expect(branchForce).toHaveLength(1);
+    }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
+  });
 
-      expect(error).toBeInstanceOf(ReplayConflictError);
-      const temp = calls[2]?.[3];
-      expect(temp).toBe("stack/replay-1700000000000-stack-b");
-      expect(calls).toEqual([
-        ["git", "worktree", "list", "--porcelain", "-z"],
-        ["git", "branch", "--show-current"],
-        ["git", "checkout", "-B", temp, "dev"],
-        ["git", "cherry-pick", "--empty=drop", "b1"],
-        ["git", "diff", "--name-only", "--diff-filter=U"],
-        ["git", "cherry-pick", "--abort"],
-        ["git", "checkout", "stack-c"],
-        ["git", "branch", "-D", temp],
-      ]);
+  it.effect("replay retries once when branch -f loses a concurrent-checkout race", () => {
+    let worktreeListCount = 0;
+    let forceAttempts = 0;
+    const proc = Layer.succeed(
+      Proc.Service,
+      Proc.Service.of({
+        exec: (_cwd, _tool, args) =>
+          Effect.gen(function* () {
+            if (args[0] === "worktree" && args[1] === "list") {
+              worktreeListCount += 1;
+              return "";
+            }
+            if (args[0] === "branch" && args[1] === "-f") {
+              forceAttempts += 1;
+              if (forceAttempts === 1) {
+                return yield* Effect.fail(
+                  new ExecError(
+                    "git",
+                    args,
+                    128,
+                    "fatal: Cannot force update the branch 'stack-b' which is checked out at '/x'",
+                  ),
+                );
+              }
+            }
+            return "";
+          }),
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const git = yield* Git.Service;
+      yield* git.replay("stack-b", "dev", ["b1"]);
+
+      expect(worktreeListCount).toBe(2);
+      expect(forceAttempts).toBe(2);
+    }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
+  });
+
+  it.effect("replay does not retry a dirty-owner failure", () => {
+    let worktreeListCount = 0;
+    const proc = Layer.succeed(
+      Proc.Service,
+      Proc.Service.of({
+        exec: (_cwd, _tool, args) =>
+          Effect.sync(() => {
+            if (args[0] === "worktree" && args[1] === "list") {
+              worktreeListCount += 1;
+              return "worktree /wt/stack-b\0HEAD b1\0branch refs/heads/stack-b\0";
+            }
+            if (args[0] === "status") return " M dirty.txt";
+            return "";
+          }),
+      }),
+    );
+
+    return Effect.gen(function* () {
+      const git = yield* Git.Service;
+      const error = yield* git.replay("stack-b", "dev", ["b1"]).pipe(Effect.flip);
+
+      // The dirty-owner message says "checked out at ... with local changes" —
+      // it must fail once, not trigger the stale-ownership invalidate + retry.
+      expect(String(error.stderr)).toContain("local changes");
+      expect(worktreeListCount).toBe(1);
     }).pipe(Effect.provide(Git.live.pipe(Layer.provideMerge(cfg), Layer.provideMerge(proc))));
   });
 
@@ -2974,7 +3121,7 @@ describe("Stack", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("sync restores the current branch when link refresh fails", () => {
+  it.effect("sync surfaces a link-refresh failure without touching the primary checkout", () => {
     const seen: Array<string> = [];
     const refs = [ref("dev", "dev-1"), ref("stack-a", "a-1"), ref("stack-b", "b-1")];
     const layer = stackTestLayer({
@@ -2996,7 +3143,8 @@ describe("Stack", () => {
       );
 
       expect(failed).toContain("gh pr edit");
-      expect(seen).toContain("switch stack-b");
+      // Repair now runs in isolated worktrees; sync never switches the primary checkout.
+      expect(seen).toEqual([]);
     }).pipe(Effect.provide(layer));
   });
 
@@ -5980,21 +6128,13 @@ describe("Stack", () => {
     }).pipe(Effect.provide(platform)),
   );
 
-  it.effect("land apply refuses a dirty worktree before merging", () => {
+  it.effect("land apply proceeds with a dirty primary checkout on an unrelated branch", () => {
     const test = makeLand([" M foo.ts", "?? scratch/"]);
 
     return Effect.gen(function* () {
       const stack = yield* Stack;
-      let err = "";
-      yield* stack.land("stack-a", { apply: true }).pipe(
-        Effect.catch((cause) =>
-          Effect.sync(() => {
-            err = cause instanceof DirtyWorktreeError ? cause.message : String(cause);
-          }),
-        ),
-      );
-      expect(err).toContain("worktree is dirty");
-      expect(test.seen).toEqual([]);
+      yield* stack.land("stack-a", { apply: true });
+      expect(test.seen).toContain("merge 4");
     }).pipe(Effect.provide(test.layer));
   });
 

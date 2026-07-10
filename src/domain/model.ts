@@ -201,21 +201,6 @@ export class MergeBaseError extends Schema.TaggedErrorClass<MergeBaseError>()("M
   }
 }
 
-export class DirtyWorktreeError extends Schema.TaggedErrorClass<DirtyWorktreeError>()(
-  "DirtyWorktreeError",
-  {
-    lines: Schema.Array(Schema.String),
-    message: Schema.String,
-  },
-) {
-  constructor(readonly lines: ReadonlyArray<string>) {
-    super({
-      lines: Array.from(lines),
-      message: lines.length > 0 ? `worktree is dirty:\n${lines.join("\n")}` : "worktree is dirty",
-    });
-  }
-}
-
 export class StackOperationError extends Schema.TaggedErrorClass<StackOperationError>()(
   "StackOperationError",
   {
@@ -324,7 +309,6 @@ export type StackError =
   | StateError
   | BranchError
   | MergeBaseError
-  | DirtyWorktreeError
   | StackOperationError
   | ReplayConflictError;
 

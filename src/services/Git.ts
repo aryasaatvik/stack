@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { BranchRef, branchRef, ExecError, ReplayConflictError } from "../domain/model.ts";
@@ -62,6 +63,7 @@ export const live = Layer.effect(
   Effect.gen(function* () {
     const cfg = yield* StackConfig;
     const proc = yield* Proc.Service;
+    const fs = yield* FileSystem.FileSystem;
 
     const runAt = Effect.fn("Git.runAt")(function* (
       cwd: string,
@@ -293,22 +295,22 @@ export const live = Layer.effect(
         }),
       );
     });
-    const unmergedPaths = Effect.fn("Git.unmergedPaths")(() =>
-      run("git", ["diff", "--name-only", "--diff-filter=U"], [0, 1]).pipe(
+    const unmergedPathsAt = Effect.fn("Git.unmergedPathsAt")((path: string) =>
+      runAt(path, "git", ["diff", "--name-only", "--diff-filter=U"], [0, 1]).pipe(
         Effect.map((out) => out.split("\n").filter(Boolean)),
       ),
     );
-    const replay = Effect.fn("Git.replay")(function* (
+    const unmergedPaths = Effect.fn("Git.unmergedPaths")(() => unmergedPathsAt(cfg.root));
+    // Replay onto an owning worktree in place: build the new tip on a temp branch, then
+    // fast-forward the branch's own worktree via checkout + reset. The worktree's original
+    // checkout is restored and the temp branch deleted in the ensuring chain.
+    const replayInOwner = Effect.fn("Git.replayInOwner")(function* (
       branch: string,
       parent: string,
       commits: ReadonlyArray<string>,
+      owner: Worktree,
     ) {
-      const owner = (yield* worktrees()).find((worktree) => worktree.branch === branch) ?? null;
-      if (owner && owner.dirty.length > 0) {
-        return yield* Effect.fail(checkedOutDirtyError(branch, owner));
-      }
-
-      const root = owner?.path ?? cfg.root;
+      const root = owner.path;
       const current = yield* runAt(root, "git", ["branch", "--show-current"]);
       const now = yield* Clock.currentTimeMillis;
       const temp = `stack/replay-${now}-${branch.replaceAll("/", "-")}`;
@@ -331,7 +333,7 @@ export const live = Layer.effect(
             Effect.asVoid,
             Effect.catchTag("ExecError", (err) =>
               Effect.gen(function* () {
-                const paths = yield* unmergedPaths().pipe(
+                const paths = yield* unmergedPathsAt(root).pipe(
                   Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)),
                 );
                 return yield* Effect.fail(
@@ -341,15 +343,111 @@ export const live = Layer.effect(
             ),
           );
         }
-        if (owner) {
-          yield* runAt(root, "git", ["checkout", branch]).pipe(Effect.asVoid);
-          yield* runAt(root, "git", ["reset", "--hard", temp]).pipe(Effect.asVoid);
-        } else {
-          yield* runAt(root, "git", ["branch", "-f", branch, temp]).pipe(Effect.asVoid);
-        }
+        yield* runAt(root, "git", ["checkout", branch]).pipe(Effect.asVoid);
+        yield* runAt(root, "git", ["reset", "--hard", temp]).pipe(Effect.asVoid);
       }).pipe(
         Effect.ensuring(
           abortCherryPick.pipe(Effect.ensuring(restoreCurrent.pipe(Effect.ensuring(deleteTemp)))),
+        ),
+      );
+    });
+
+    // Replay an unowned branch in an ephemeral detached workbench worktree so the primary
+    // checkout's HEAD and working tree are never touched. Cherry-pick on the detached HEAD,
+    // then move the branch ref to the new tip. The workbench is always removed in the ensuring
+    // chain, on success, conflict, or defect.
+    const replayInWorkbench = Effect.fn("Git.replayInWorkbench")(function* (
+      branch: string,
+      parent: string,
+      commits: ReadonlyArray<string>,
+    ) {
+      const tmp = yield* fs
+        .makeTempDirectory({ prefix: "stack-replay-" })
+        .pipe(
+          Effect.mapError(
+            (err) =>
+              new ExecError(
+                "mktemp",
+                ["stack-replay-"],
+                1,
+                `temp directory failed: ${String(err)}`,
+              ),
+          ),
+        );
+      const abortCherryPick = runAt(tmp, "git", ["cherry-pick", "--abort"], [0, 1, 128]).pipe(
+        Effect.asVoid,
+        Effect.orDie,
+      );
+      const removeWorkbench = Effect.gen(function* () {
+        yield* runAt(cfg.root, "git", ["worktree", "remove", "--force", tmp], [0, 1, 128]).pipe(
+          Effect.asVoid,
+          Effect.orDie,
+        );
+        invalidateWorktrees();
+        yield* fs.remove(tmp, { recursive: true, force: true }).pipe(Effect.orDie);
+      });
+
+      yield* Effect.gen(function* () {
+        yield* runAt(cfg.root, "git", ["worktree", "add", "--detach", tmp, parent]).pipe(
+          Effect.asVoid,
+        );
+        invalidateWorktrees();
+        if (commits.length > 0) {
+          yield* runAt(tmp, "git", ["cherry-pick", "--empty=drop", ...commits]).pipe(
+            Effect.asVoid,
+            Effect.catchTag("ExecError", (err) =>
+              Effect.gen(function* () {
+                const paths = yield* unmergedPathsAt(tmp).pipe(
+                  Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)),
+                );
+                return yield* Effect.fail(
+                  new ReplayConflictError(branch, parent, paths, err.stderr),
+                );
+              }),
+            ),
+          );
+        }
+        yield* runAt(tmp, "git", ["branch", "-f", branch, "HEAD"]).pipe(Effect.asVoid);
+      }).pipe(Effect.ensuring(abortCherryPick.pipe(Effect.ensuring(removeWorkbench))));
+    });
+
+    const replayOnce = Effect.fn("Git.replayOnce")(function* (
+      branch: string,
+      parent: string,
+      commits: ReadonlyArray<string>,
+    ) {
+      const owner = (yield* worktrees()).find((worktree) => worktree.branch === branch) ?? null;
+      if (owner && owner.dirty.length > 0) {
+        return yield* Effect.fail(checkedOutDirtyError(branch, owner));
+      }
+      return owner
+        ? yield* replayInOwner(branch, parent, commits, owner)
+        : yield* replayInWorkbench(branch, parent, commits);
+    });
+
+    // Stale-ownership resilience: a snapshot taken earlier in the run can misroute a replay if a
+    // worktree grabbed or released the branch mid-run. Git reports that as "already used by
+    // worktree" from checkout/worktree-add, or "Cannot force update the branch" (capitalization
+    // varies across git versions) from `branch -f` on a branch a worktree acquired concurrently.
+    // Match git's phrases case-insensitively — but never our own dirty-owner error, which says
+    // "checked out at" and must not trigger a wasted retry. Either way: drop the snapshot,
+    // recompute ownership, retry exactly once.
+    const staleOwnership = (stderr: string) => {
+      const text = stderr.toLowerCase();
+      return text.includes("already used by worktree") || text.includes("cannot force update");
+    };
+    const replay = Effect.fn("Git.replay")(function* (
+      branch: string,
+      parent: string,
+      commits: ReadonlyArray<string>,
+    ) {
+      return yield* replayOnce(branch, parent, commits).pipe(
+        Effect.catchTag("ExecError", (err) =>
+          staleOwnership(err.stderr)
+            ? Effect.sync(invalidateWorktrees).pipe(
+                Effect.flatMap(() => replayOnce(branch, parent, commits)),
+              )
+            : Effect.fail(err),
         ),
       );
     });
