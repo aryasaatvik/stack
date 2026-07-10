@@ -1,4 +1,22 @@
-# @kitlangton/stack
+# @aryasaatvik/stack
+
+## 0.5.0
+
+### Minor Changes
+
+- d1156c1: Off-stack `stack sync` no longer silently syncs every stack. It auto-scopes when exactly one stack exists, no-ops when none exist, and otherwise errors listing the stack roots; the new `sync --all` opts into repo-wide sync (and is now required for `--continue-on-failure`). Scope is resolved from a cheap membership graph before any merge-base work, so scoped syncs never touch out-of-scope stacks.
+- f8b1f23: **Breaking:** `stack sync <branch>` now scopes to the branch's subtree (the branch plus its descendants), not the whole connected stack. Ancestors are read-only rebase targets and sibling subtrees are never read or moved — a dirty sibling worktree no longer blocks the run. Use `sync <root>` or `sync --all` to freshen a whole stack, including trunk-chase.
+- 3f3b3c3: Replays of branches with no owning worktree now run in an ephemeral detached worktree instead of the primary checkout, and the repo-wide clean-checkout requirement is gone — only worktrees that own a branch being repaired must be clean. Stale worktree-ownership errors invalidate the snapshot and retry once.
+- bf83181: `merge --auto --through` campaigns repair lazily: each landing rebases+pushes only the next root (O(n) instead of O(n²) force-pushes), with one full repair pass at the end; `--eager` restores the old behavior. Progress is journaled in `.git/stack/campaign.json`, so after a conflict fix `stack merge --continue` resumes from the recorded next root instead of re-running everything.
+- b01e578: `merge --auto --except <branch-or-change>` lands every root except the named subtree, which is never rebased or pushed; like `--through` it persists and resumes with `--continue`. Replay-conflict failures now print the surgical recovery recipe (`git rebase --onto <new-parent> <backup-ref> <branch>` against freshly fetched refs), and the skill documents `--except`, `--through`'s chain-only sibling semantics, and `stack track` for pre-PR children.
+
+### Patch Changes
+
+- bf9ada2: Fix a correctness bug where a parent force-pushed from another worktree left the local ref stale: drift was measured against the stale tip, so sync reported success while doing nothing. Sync now fetches in dry-run too and reconciles in-scope refs against origin — fast-forwarding refs strictly behind, and failing loudly when a read-only parent target has diverged.
+- cd3ef4b: Persist each link's `anchor` as the parent tip the child was last made consistent with, and prefer it over the merge-base for replay ranges — so a manual parent rewrite between runs replays only the child's own commits instead of conflicting on rewritten-parent commits.
+- b77f636: Cache the worktree snapshot for the lifetime of a run and bound per-worktree dirty checks to 4 concurrent `git status` processes (previously unbounded on every call).
+- 8cf2a12: Carry body and labels on listed changes so stack-block updates no longer fan out a per-request `gh pr view` / `glab mr view`, and skip the redundant post-merge list refetch when repair changed nothing host-side.
+- de442cb: Heartbeat with exponential backoff (5s→30s) while waiting for a merge to land, plus coarse cold-start status lines during sync/merge reads — all on stderr; stdout is unchanged.
 
 ## 0.4.2
 

@@ -1,5 +1,0 @@
----
-"@aryasaatvik/stack": patch
----
-
-`stack sync` now reconciles local branch refs against `origin/<branch>` before drift detection, fixing a correctness bug where a parent force-pushed from another worktree/agent left the local ref stale. Because `git fetch` only moves remote-tracking refs, drift was measured against the stale local parent tip — the sync reported success while doing nothing, or rebased the child onto the stale parent. Sync now fetches in dry-run too (a read-only remote-tracking refresh, not a mutation), and for every in-scope branch and its non-trunk parent rebase targets it fast-forwards a local ref that is strictly behind origin (previewed as `would fast-forward <branch> to origin/<branch>`). A read-only parent target that has diverged from origin fails loudly, naming both tips and how to resolve it; a diverged in-scope branch is left to repair, whose replay + force-with-lease push is the retry-after-failed-push recovery. Drift detection and rebase targets use the reconciled tip.
