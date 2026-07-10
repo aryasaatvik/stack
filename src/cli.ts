@@ -47,10 +47,16 @@ const through = Flag.string("through").pipe(
   Flag.optional,
 );
 
+const all = Flag.boolean("all").pipe(
+  Flag.withDescription(
+    "Sync every tracked stack in the repository. Required for --continue-on-failure.",
+  ),
+);
+
 const continueOnFailure = Flag.boolean("continue-on-failure").pipe(
   Flag.withAlias("keep-going"),
   Flag.withDescription(
-    "Process every independent stack and report failures at the end instead of stopping on the first failure.",
+    "With --all, process every independent stack and report failures at the end instead of stopping on the first failure.",
   ),
 );
 
@@ -118,13 +124,15 @@ const syncCommand = Command.make(
   {
     branch: Argument.string("branch").pipe(Argument.optional),
     apply,
+    all,
     continueOnFailure,
   },
-  Effect.fn(function* ({ branch, apply, continueOnFailure }) {
+  Effect.fn(function* ({ branch, apply, all, continueOnFailure }) {
     const stack = yield* Stack;
     const branchValue = Option.getOrUndefined(branch);
     const items = yield* stack.sync({
       apply,
+      all,
       continueOnFailure,
       ...(branchValue === undefined ? {} : { branch: branchValue }),
     });
@@ -132,7 +140,7 @@ const syncCommand = Command.make(
   }),
 ).pipe(
   Command.withDescription(
-    "Infer stack links from code-host target branches (GitHub PRs / GitLab MRs), clean stale metadata, repair branches, retarget changes, and refresh stack links. If branch is omitted and the current branch is on a stack, sync only that stack; otherwise sync the repo. By default this is a dry run. Add --apply to mutate branches, changes, and stack metadata.",
+    "Infer stack links from code-host target branches (GitHub PRs / GitLab MRs), clean stale metadata, repair branches, retarget changes, and refresh stack links. If branch is omitted and the current branch is on a stack, sync only that stack; off-stack, sync the single stack automatically or ask you to pick one. Add --all to sync every stack in the repo. By default this is a dry run. Add --apply to mutate branches, changes, and stack metadata.",
   ),
   Command.withExamples([
     {
@@ -145,10 +153,14 @@ const syncCommand = Command.make(
     },
     {
       command: "stack sync --apply",
-      description: "Run the common stack maintenance workflow",
+      description: "Run the common stack maintenance workflow for the current stack",
     },
     {
-      command: "stack sync --apply --continue-on-failure",
+      command: "stack sync --apply --all",
+      description: "Run stack maintenance across every stack in the repository",
+    },
+    {
+      command: "stack sync --apply --all --continue-on-failure",
       description: "Sync independent stacks and summarize any failures at the end",
     },
   ]),
