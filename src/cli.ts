@@ -11,7 +11,7 @@ import * as Path from "effect/Path";
 import { Argument, CliError, Command, Flag } from "effect/unstable/cli";
 import pkg from "../package.json" with { type: "json" };
 import skillContent from "../skills/stack/SKILL.md" with { type: "text" };
-import { BranchError, DirtyWorktreeError, ExecError, MergeBaseError } from "./domain/model.ts";
+import { BranchError, ExecError, MergeBaseError } from "./domain/model.ts";
 import { renderStatus } from "./format.ts";
 import * as Proc from "./platform/proc.ts";
 import { parseBlockLinkConfig, parseTrunksConfig, StackConfig, trunks } from "./services/Config.ts";
@@ -470,10 +470,7 @@ if (import.meta.main) {
       Console.error(
         err instanceof ExecError && err.stderr
           ? `${err.message}\n${err.stderr}`
-          : err instanceof DirtyWorktreeError ||
-              err instanceof BranchError ||
-              err instanceof MergeBaseError ||
-              err instanceof Error
+          : err instanceof BranchError || err instanceof MergeBaseError || err instanceof Error
             ? err.message
             : String(err),
       ),

@@ -13,7 +13,6 @@ import {
   CampaignLanding,
   campaignLanding,
   campaignState,
-  DirtyWorktreeError,
   MergeBaseError,
   PullMeta,
   pullRef,
@@ -103,13 +102,6 @@ ${note}`;
           labels: old.labels.map((item) => item.name),
         };
       };
-
-      const clean = Effect.fn("Stack.clean")(() =>
-        Effect.gen(function* () {
-          const lines = yield* git.dirty();
-          if (lines.length > 0) return yield* Effect.fail(new DirtyWorktreeError(lines));
-        }),
-      );
 
       const ensureRepairableWorktrees = Effect.fn("Stack.ensureRepairableWorktrees")(function* (
         branches: ReadonlyArray<string>,
@@ -1408,7 +1400,6 @@ ${note}`;
           }
           const current = (requestedBranch || all) && dryRun ? "" : yield* git.current();
           return yield* Effect.gen(function* () {
-            if (!dryRun) yield* clean();
             // Fetch in dry-run too: refreshing remote-tracking refs is a read
             // refresh, not a mutation, and reconciliation/drift detection below
             // must see origin's real tips so previews match what apply would do.
@@ -1646,13 +1637,7 @@ ${note}`;
               return yield* Effect.fail(new StackOperationError(output.join("\n")));
             }
             return output;
-          }).pipe(
-            Effect.ensuring(
-              dryRun
-                ? Effect.void
-                : git.switch(current).pipe(Effect.catchTag("ExecError", () => Effect.void)),
-            ),
-          );
+          });
         }),
       );
 
@@ -1996,7 +1981,6 @@ ${note}`;
             }
             const active = apply || auto;
 
-            if (active) yield* clean();
             const { state, refs, pulls, current, target } = yield* landTarget(branch);
             const link = state.links.find((item) => item.branch === target) ?? null;
             if (!link) {
@@ -2220,7 +2204,6 @@ ${note}`;
                   yield* codeHost.changes(),
                 );
                 const notes = yield* linksFor(repair.state, true, landed, repairedPulls);
-                if (current !== target) yield* git.switch(current);
                 const tail = next ? `next root: ${next}` : "next root: none";
                 const view = yield* diagram(branches);
                 return [...actions, ...repair.lines, ...notes.lines, tail, ...view];
@@ -2499,7 +2482,6 @@ ${note}`;
       const undo = Effect.fn("Stack.undo")((apply = false) =>
         Effect.gen(function* () {
           const current = yield* git.current();
-          if (apply) yield* clean();
           const run = yield* store.readUndo();
           if (!run) return [apply ? "nothing to undo" : "would do nothing"];
 
