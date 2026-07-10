@@ -208,12 +208,15 @@ export const live = Layer.effect(
       ),
     );
     // `git merge-base --is-ancestor a b` exits 0 when a is an ancestor of b, 1
-    // when it is not; anything else is a real error (e.g. an unknown ref).
+    // when it is not, and 128 when a ref is unknown (e.g. a persisted anchor
+    // whose commit was garbage-collected after a force-push). For this
+    // predicate an unknown ref simply is not an ancestor — callers fall back
+    // to the merge-base path — so 128 maps to false rather than failing.
     const ancestor = Effect.fn("Git.ancestor")((a: string, b: string) =>
       run("git", ["merge-base", "--is-ancestor", a, b]).pipe(
         Effect.as(true),
         Effect.catchTag("ExecError", (err) =>
-          err.code === 1 ? Effect.succeed(false) : Effect.fail(err),
+          err.code === 1 || err.code === 128 ? Effect.succeed(false) : Effect.fail(err),
         ),
       ),
     );

@@ -588,6 +588,35 @@ describe("Git", () => {
       expect(remotes).toEqual([{ name: "origin", url: "git@github.com:fork/repo.git" }]);
     }).pipe(Effect.provide(platform)),
   );
+
+  it.effect("ancestor treats an unknown ref as not an ancestor", () =>
+    Effect.gen(function* () {
+      const root = yield* tempDir();
+      const repo = join(root, "repo");
+
+      yield* mkdirp(repo);
+      yield* shell(repo, "git", ["init", "-b", "main"]);
+      yield* shell(repo, "git", ["config", "user.email", "stack@example.com"]);
+      yield* shell(repo, "git", ["config", "user.name", "Stack Test"]);
+      yield* commitFile(repo, "base.txt", "base\n", "base");
+
+      const cfgLayer = StackConfig.layer({ root: repo, trunks: ["main"] }).pipe(
+        Layer.provide(NodeServices.layer),
+      );
+      const result = yield* Effect.gen(function* () {
+        const git = yield* Git.Service;
+        // A GC'd/pruned anchor SHA makes `merge-base --is-ancestor` exit 128;
+        // the predicate must report false so callers fall back to merge-base.
+        return yield* git.ancestor("0123456789012345678901234567890123456789", "main");
+      }).pipe(
+        Effect.provide(Git.live.pipe(Layer.provide(cfgLayer))),
+        Effect.provide(Proc.live),
+        Effect.provide(NodeServices.layer),
+      );
+
+      expect(result).toBe(false);
+    }).pipe(Effect.provide(platform)),
+  );
 });
 
 const makeSync = (codeHost: Partial<CodeHost.Interface> = {}) => {
