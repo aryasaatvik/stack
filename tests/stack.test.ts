@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   branchRef,
+  campaignLanding,
+  campaignState,
   CodeHostChangeNotFoundError,
   DirtyWorktreeError,
   ExecError,
@@ -110,6 +112,7 @@ const gitAndCodeHost = (service: Partial<Git.Interface & CodeHost.Interface>) =>
     auto: () => Effect.void,
     merge: () => Effect.void,
     wait: () => Effect.void,
+    merged: () => Effect.succeed(true),
     changes: () => Effect.succeed([]),
     change: (number) => Effect.fail(new CodeHostChangeNotFoundError(number)),
     edit: () => Effect.void,
@@ -293,6 +296,7 @@ const integrationGitHub = (opts: {
           );
           return made;
         });
+      const mergedSet = new Set<number>();
       const merge = (pr: number) =>
         Effect.gen(function* () {
           const pull = (yield* Ref.get(pulls)).find((item) => item.number === pr);
@@ -302,6 +306,7 @@ const integrationGitHub = (opts: {
             );
           }
           yield* record(`merge ${pr}`);
+          mergedSet.add(pr);
           yield* run(["checkout", String(pull.base)]);
           yield* run(["merge", "--squash", String(pull.head)]);
           yield* run(["commit", "-m", `merge ${pull.head}`]);
@@ -319,6 +324,7 @@ const integrationGitHub = (opts: {
         auto: (pr) => record(`auto ${pr}`),
         merge,
         wait: (pr) => record(`wait ${pr}`),
+        merged: (pr) => Effect.succeed(mergedSet.has(pr)),
         changes: listOpen,
         change: getPull,
         edit,
@@ -4999,6 +5005,44 @@ describe("Stack", () => {
         stack.land(undefined, { continue: true, through: "5" }),
       );
       expect(String(throughError)).toContain("drop --through");
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land --continue rejects --apply and --admin", () => {
+    const test = makeLand();
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const applyError = yield* Effect.flip(stack.land(undefined, { continue: true, apply: true }));
+      expect(String(applyError)).toContain("drop --apply/--admin");
+      const adminError = yield* Effect.flip(stack.land(undefined, { continue: true, admin: true }));
+      expect(String(adminError)).toContain("drop --apply/--admin");
+    }).pipe(Effect.provide(test.layer));
+  });
+
+  it.effect("land --continue refuses a recorded landing closed without merging", () => {
+    // The code host reports the recorded PR as not merged (closed instead).
+    const test = makeLand([], "stack-a", null, { merged: () => Effect.succeed(false) });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const store = yield* Store;
+      // Journal claims stack-a (PR 4) landed, but the memory host never merged
+      // it — the operator closed it instead. Absence from the open set must not
+      // satisfy the guard.
+      yield* store.writeCampaign(
+        campaignState({
+          at: "2026-07-10T00:00:00.000Z",
+          through: "stack-c",
+          eager: false,
+          chain: ["stack-a", "stack-c"],
+          stack: ["stack-a", "stack-c"],
+          landed: [campaignLanding({ branch: "stack-a", pr: 4, backup: null })],
+        }),
+      );
+      const error = yield* Effect.flip(stack.land(undefined, { continue: true }));
+      expect(String(error)).toContain("not merged");
+      expect(String(error)).toContain("closed without merging");
     }).pipe(Effect.provide(test.layer));
   });
 

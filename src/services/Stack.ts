@@ -1902,7 +1902,6 @@ ${note}`;
             readonly apply?: boolean;
             readonly auto?: boolean;
             readonly admin?: boolean;
-            readonly through?: string;
             // Post-merge descendant repair scope for this landing:
             //   undefined -> full eager repair of the whole subtree (single/final
             //                merge, or --eager campaign landing),
@@ -2330,6 +2329,13 @@ ${note}`;
                 ),
               );
             }
+            if (opts.apply || opts.admin) {
+              return yield* Effect.fail(
+                new StackOperationError(
+                  "merge --continue resumes the saved campaign with auto-merge; drop --apply/--admin",
+                ),
+              );
+            }
             const campaign = yield* store.readCampaign();
             if (!campaign) {
               return yield* Effect.fail(
@@ -2339,12 +2345,18 @@ ${note}`;
               );
             }
             // Trust the journal only once the recorded landings really merged.
+            // Checking merge state (not absence from the open set) also catches a
+            // recorded landing whose change was closed without merging.
             const openHeads = new Set((yield* codeHost.changes()).map((pull) => String(pull.head)));
             for (const item of campaign.landed) {
-              if (openHeads.has(String(item.branch))) {
+              const landedOk =
+                item.pr !== null
+                  ? yield* codeHost.merged(Number(item.pr))
+                  : !openHeads.has(String(item.branch));
+              if (!landedOk) {
                 return yield* Effect.fail(
                   new StackOperationError(
-                    `campaign recorded ${item.branch} as landed, but its ${requestLabel} is still open; merge or resolve it before continuing`,
+                    `campaign recorded ${item.branch} as landed, but ${item.pr !== null ? `${requestLabel} ${reference(Number(item.pr))} is not merged (still open, or closed without merging)` : `its ${requestLabel} is still open`}; merge or resolve it before continuing`,
                   ),
                 );
               }

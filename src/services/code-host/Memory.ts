@@ -26,6 +26,7 @@ export const layer = (opts: Options) =>
     CodeHost.Service,
     Effect.gen(function* () {
       const pullsRef = yield* Ref.make(Array.from(opts.pulls ?? []));
+      const mergedRef = yield* Ref.make(new Set<number>());
       const metasRef = yield* Ref.make(
         new Map<number, PullMeta>((opts.metas ?? []).map((item) => [Number(item.number), item])),
       );
@@ -193,11 +194,16 @@ export const layer = (opts: Options) =>
         }
         yield* requireOpen(pr);
         yield* record(`merge ${pr}`);
+        yield* Ref.update(mergedRef, (set) => new Set(set).add(pr));
         yield* Ref.update(pullsRef, (pulls) => pulls.filter((item) => item.number !== pr));
       });
       const auto = Effect.fn("CodeHost.memory.auto")(function* (pr: number) {
         yield* requireOpen(pr);
         yield* record(`auto ${pr}`);
+      });
+      const merged = Effect.fn("CodeHost.memory.merged")(function* (pr: number) {
+        yield* record(`merged ${pr}`);
+        return (yield* Ref.get(mergedRef)).has(pr);
       });
       const wait = Effect.fn("CodeHost.memory.wait")(function* (pr: number) {
         yield* requireOpen(pr);
@@ -209,6 +215,7 @@ export const layer = (opts: Options) =>
         auto,
         merge,
         wait,
+        merged,
         changes,
         change,
         edit,

@@ -221,6 +221,15 @@ export const layer = Layer.effect(
       }),
     );
 
+    const merged = Effect.fn("CodeHost.gitlab.merged")((pr: number) =>
+      Effect.gen(function* () {
+        const args = ["mr", "view", `${pr}`, "-F", "json"];
+        const out = yield* run(args);
+        const row = yield* decodeMRWatch(args, out);
+        return row.merged_at !== null || row.state === "merged";
+      }),
+    );
+
     const edit = Effect.fn("CodeHost.gitlab.edit")((pr: number, base: string) =>
       run(["mr", "update", `${pr}`, "--target-branch", base, "--yes"]).pipe(Effect.asVoid),
     );
@@ -284,6 +293,7 @@ export const layer = Layer.effect(
       auto,
       merge,
       wait,
+      merged,
       changes,
       change,
       edit,
