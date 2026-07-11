@@ -79,6 +79,11 @@ needed; `stack track` is the supported way to join a pre-PR child to the stack.
   Off-stack (trunk checkout or detached HEAD) it auto-scopes the single stack's
   root when only one exists, no-ops when none exist, and otherwise lists the
   stack roots and asks you to pick one with `sync <branch>` or `sync --all`.
+  Both preview and apply fetch first and reconcile in-scope refs against
+  origin: a local ref strictly behind `origin/<branch>` is fast-forwarded
+  (previewed as `would fast-forward`), and a read-only parent target that has
+  diverged from origin fails loudly with resolution commands instead of
+  repairing against a stale tip.
 - `stack sync --apply [branch]` — infer links, remove stale links, repair
   descendants, retarget changes, refresh stack blocks, show a tree summary.
 - `stack sync --all` — sync every stack in the repository instead of one; the
@@ -106,9 +111,10 @@ needed; `stack track` is the supported way to join a pre-PR child to the stack.
   pushed — it waits for its own later campaign. Use this for "land everything
   except X" on a forked stack. Mutually exclusive with `--through`.
 - `stack merge --continue` — resume a `--through` or `--except` campaign that
-  stopped on a replay conflict. Trusts the recorded landed roots and picks up from
-  the next root; combine it with neither a branch argument, `--through`, nor
-  `--except`.
+  stopped on a replay conflict. It verifies the recorded roots really merged
+  (a landing closed without merging fails loudly) and picks up from the next
+  root; combine it with no branch argument and none of `--through`, `--except`,
+  `--apply`, or `--admin` — the saved campaign owns those.
 - `stack history` — show the most recent applied repair journal.
 - `stack undo` — dry-run restore of the last applied mutation.
 - `stack undo --apply` — restore branch tips, change targets, and stack metadata.
@@ -121,7 +127,7 @@ block in each open change description:
 ```text
 <!-- stack:links:start -->
 
-### [Stack](https://github.com/kitlangton/stack)
+### [Stack](https://github.com/aryasaatvik/stack)
 
 - #101 `stack-a`
   - #102 `stack-b`
@@ -136,7 +142,8 @@ The current change is bold with `👈 current`. GitHub uses `#123`; GitLab uses
 
 ## Safety Rules
 
-- Bare `stack sync` never mutates branches, changes, or stack metadata.
+- Bare `stack sync` never mutates branches, changes, or stack metadata (it may
+  refresh remote-tracking refs via `git fetch` so previews match origin).
 - `stack merge` is dry-run by default.
 - Mutating commands need `--apply` (except `merge --auto`, which waits for the
   code host and repairs after the root lands).
