@@ -1,5 +1,11 @@
 # @aryasaatvik/stack
 
+## 0.5.1
+
+### Patch Changes
+
+- Align the embedded `stack skill` guide with 0.5.0 behavior: attribution URL points at aryasaatvik/stack, sync docs cover origin reconciliation (fetch in preview, fast-forward refs strictly behind, loud diverged-parent failure), `merge --continue` documents the `--apply`/`--admin` rejection and merged-state verification, and the bare-sync safety rule notes it may refresh remote-tracking refs.
+
 ## 0.5.0
 
 ### Minor Changes
