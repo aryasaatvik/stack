@@ -734,10 +734,26 @@ ${note}`;
             const actions: Array<StackResult.StackResultItem> = [];
             const kept = new Array<StackLink>();
             const replayAnchors = new Map<string, string>();
+            // Merged branch -> its merge-time base, for links whose recorded
+            // change landed outside stack (e.g. squash-merged from the host
+            // UI with the head branch left undeleted). Children reparent past
+            // these instead of resurrecting the landed work with a new change.
+            const landedBases = new Map<string, string>();
 
             for (const link of state.links) {
               const branch = String(link.branch);
               const pull = pullsByBranch.get(branch) ?? null;
+              if (!pull && link.pr !== null && (yield* codeHost.merged(Number(link.pr)))) {
+                const landed = yield* codeHost.change(Number(link.pr));
+                landedBases.set(branch, String(landed.base));
+                actions.push({
+                  _tag: "RemoveLink",
+                  mode,
+                  branch,
+                  reason: `${requestLabel} ${reference(Number(link.pr))} merged`,
+                });
+                continue;
+              }
               if (!pull && !openBases.has(branch)) {
                 actions.push({
                   _tag: "RemoveLink",
@@ -750,6 +766,19 @@ ${note}`;
               kept.push(link);
             }
 
+            // Chase chained external landings (A merged into dev, B merged
+            // into A) so children reparent onto the first target that still
+            // has open work or is a trunk.
+            const resolveLanded = (name: string) => {
+              let target = name;
+              const seen = new Set<string>();
+              while (landedBases.has(target) && !seen.has(target)) {
+                seen.add(target);
+                target = landedBases.get(target)!;
+              }
+              return target;
+            };
+
             const plannedParents = new Map(
               kept.map((link) => [String(link.branch), String(link.parent)]),
             );
@@ -757,10 +786,9 @@ ${note}`;
             for (const link of kept) {
               const branch = String(link.branch);
               const pull = pullsByBranch.get(branch) ?? null;
-              const parent = pull ? String(pull.base) : String(link.parent);
+              const parent = resolveLanded(pull ? String(pull.base) : String(link.parent));
               const parentValid = refNames.has(parent) || trunks.has(parent);
               if (
-                pull &&
                 parent !== link.parent &&
                 parentValid &&
                 branch !== parent &&
@@ -780,8 +808,8 @@ ${note}`;
                     branch,
                     parent,
                     anchor: oldParentTracked ? anchor.value : link.anchor,
-                    pr: Number(pull.number),
-                    headRepository: pull.headRepository,
+                    pr: pull ? Number(pull.number) : link.pr,
+                    headRepository: pull ? pull.headRepository : (link.headRepository ?? null),
                   });
                   actions.push({
                     _tag: "UpdateLink",

@@ -204,6 +204,9 @@ export const layer = (opts: Options) =>
           return yield* new UnsupportedCodeHostOperation(opts.properties.provider, "admin merge");
         }
         yield* requireOpen(pr);
+        // Keep the change viewable after it leaves the open list, matching
+        // gh/glab where `pr view` still resolves a merged change.
+        yield* materialize(pr);
         yield* record(`merge ${pr}`);
         yield* Ref.update(mergedRef, (set) => new Set(set).add(pr));
         yield* Ref.update(pullsRef, (pulls) => pulls.filter((item) => item.number !== pr));

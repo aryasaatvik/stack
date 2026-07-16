@@ -3281,6 +3281,11 @@ describe("Stack", () => {
         stackLink({ branch: "stack-b", parent: "dev", anchor: "dev-new", pr: 4 }),
         stackLink({ branch: "stack-c", parent: "stack-b", anchor: "stack-b", pr: 3 }),
       ]),
+      service: {
+        // The recorded change vanished without merging (closed or deleted);
+        // merged changes reparent children instead of getting replacements.
+        merged: () => Effect.succeed(false),
+      },
     });
 
     return Effect.gen(function* () {
@@ -4322,6 +4327,164 @@ describe("Stack", () => {
 
       expect(seen).toContain("rebase child origin/dev child-only");
       expect(seen).not.toContain("rebase child origin/dev parent-1,parent-2,child-only");
+    }).pipe(Effect.provide(layer));
+  });
+
+  // Externally merged root (e.g. squash-merged from the host UI) whose head
+  // branch survives on the remote: the child PR still bases on it, so the link
+  // is kept alive via openBases — sync must treat the root as landed instead
+  // of recreating a PR for the merged work.
+  it.effect("sync previews an externally merged root as landed, not as a new request", () => {
+    const pulls = [pr(2, "child", "parent")];
+    const mergedParentMeta = pullMeta({
+      number: 1,
+      title: "parent",
+      body: "",
+      head: "parent",
+      base: "dev",
+      url: "u1",
+      draft: false,
+      state: "MERGED",
+      labels: [],
+    });
+    const layer = stackTestLayer({
+      current: "child",
+      refs: [ref("dev", "dev-squash"), ref("parent", "parent-tip"), ref("child", "child-head")],
+      pulls,
+      bases: bases(["child", "dev", "dev-squash"]),
+      state: stackState([
+        stackLink({ branch: "parent", parent: "dev", anchor: "dev-old", pr: 1 }),
+        stackLink({ branch: "child", parent: "parent", anchor: "parent-anchor", pr: 2 }),
+      ]),
+      service: {
+        merged: (number: number) => Effect.succeed(number === 1),
+        change: (number: number) => {
+          if (number === 1) return Effect.succeed(mergedParentMeta);
+          const found = pulls.find((item) => item.number === number);
+          return found
+            ? Effect.succeed(metaFor(found))
+            : Effect.fail(new CodeHostChangeNotFoundError(number));
+        },
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const output = (yield* stack.sync({ branch: "parent" })).join("\n");
+
+      expect(output).not.toContain("Would create");
+      expect(output).toContain("child #2 would rebase onto dev");
+      expect(output).not.toContain("parent #1");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sync --apply retargets and replays the child of an externally merged root", () => {
+    const seen: Array<string> = [];
+    const pulls = [pr(2, "child", "parent")];
+    const mergedParentMeta = pullMeta({
+      number: 1,
+      title: "parent",
+      body: "",
+      head: "parent",
+      base: "dev",
+      url: "u1",
+      draft: false,
+      state: "MERGED",
+      labels: [],
+    });
+    const layer = stackTestLayer({
+      current: "child",
+      refs: [ref("dev", "dev-squash"), ref("parent", "parent-tip"), ref("child", "child-head")],
+      pulls,
+      bases: bases(["child", "dev", "dev-squash"]),
+      state: stackState([
+        stackLink({ branch: "parent", parent: "dev", anchor: "dev-old", pr: 1 }),
+        stackLink({ branch: "child", parent: "parent", anchor: "parent-anchor", pr: 2 }),
+      ]),
+      service: {
+        merged: (number: number) => Effect.succeed(number === 1),
+        change: (number: number) => {
+          if (number === 1) return Effect.succeed(mergedParentMeta);
+          const found = pulls.find((item) => item.number === number);
+          return found
+            ? Effect.succeed(metaFor(found))
+            : Effect.fail(new CodeHostChangeNotFoundError(number));
+        },
+        edit: (number: number, base: string) =>
+          Effect.sync(() => void seen.push(`edit ${number} ${base}`)),
+        commits: (from: string, branch: string) =>
+          Effect.succeed(
+            branch === "child" && from === "parent-anchor"
+              ? ["child-only"]
+              : branch === "child" && from === "dev-squash"
+                ? ["parent-1", "parent-2", "child-only"]
+                : [],
+          ),
+        novel: (_parent: string, _branch: string, commits: ReadonlyArray<string>) =>
+          Effect.succeed(commits),
+        replay: (branch: string, parent: string, commits: ReadonlyArray<string>) =>
+          Effect.sync(() => void seen.push(`rebase ${branch} ${parent} ${commits.join(",")}`)),
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      yield* stack.sync({ branch: "parent", apply: true });
+
+      expect(seen).toContain("edit 2 dev");
+      expect(seen).toContain("rebase child origin/dev child-only");
+      expect(seen).not.toContain("rebase child origin/dev parent-1,parent-2,child-only");
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("sync reparents past chained externally merged roots", () => {
+    const pulls = [pr(3, "leaf", "mid")];
+    const landedMeta = (number: number, head: string, base: string) =>
+      pullMeta({
+        number,
+        title: head,
+        body: "",
+        head,
+        base,
+        url: `u${number}`,
+        draft: false,
+        state: "MERGED",
+        labels: [],
+      });
+    const layer = stackTestLayer({
+      current: "leaf",
+      refs: [
+        ref("dev", "dev-squash"),
+        ref("root", "root-tip"),
+        ref("mid", "mid-tip"),
+        ref("leaf", "leaf-head"),
+      ],
+      pulls,
+      bases: bases(["leaf", "dev", "dev-squash"]),
+      state: stackState([
+        stackLink({ branch: "root", parent: "dev", anchor: "dev-old", pr: 1 }),
+        stackLink({ branch: "mid", parent: "root", anchor: "root-old", pr: 2 }),
+        stackLink({ branch: "leaf", parent: "mid", anchor: "mid-anchor", pr: 3 }),
+      ]),
+      service: {
+        merged: (number: number) => Effect.succeed(number === 1 || number === 2),
+        change: (number: number) => {
+          if (number === 1) return Effect.succeed(landedMeta(1, "root", "dev"));
+          if (number === 2) return Effect.succeed(landedMeta(2, "mid", "root"));
+          const found = pulls.find((item) => item.number === number);
+          return found
+            ? Effect.succeed(metaFor(found))
+            : Effect.fail(new CodeHostChangeNotFoundError(number));
+        },
+      },
+    });
+
+    return Effect.gen(function* () {
+      const stack = yield* Stack;
+      const output = (yield* stack.sync({ branch: "root" })).join("\n");
+
+      expect(output).not.toContain("Would create");
+      expect(output).toContain("leaf #3 would rebase onto dev");
     }).pipe(Effect.provide(layer));
   });
 
