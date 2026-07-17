@@ -86,6 +86,10 @@ needed; `stack track` is the supported way to join a pre-PR child to the stack.
   repairing against a stale tip.
 - `stack sync --apply [branch]` — infer links, remove stale links, repair
   descendants, retarget changes, refresh stack blocks, show a tree summary.
+  A root whose recorded change was merged outside stack (e.g. from the host
+  UI, head branch left undeleted) is treated as landed: its link is removed,
+  children retarget past it onto the merge-time base, and no replacement
+  change is created for the merged work.
 - `stack sync --all` — sync every stack in the repository instead of one; the
   only mode that performs repo-wide stale-link cleanup and inference, and
   required for `--continue-on-failure`.
