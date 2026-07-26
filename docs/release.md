@@ -1,6 +1,6 @@
 # Releasing Stack
 
-Stack uses Tegami for changelogs, versioning, npm publication, Git tags, and GitHub Releases. Releases are run from an attended local session; GitHub Actions only validates pull requests.
+Stack uses Tegami for changelogs, versioning, npm publication, Git tags, and GitHub Releases. Releases are run from an attended local session; GitHub Actions is not used for publication, and the retained manual-dispatch workflow is validation-only.
 
 ## Queue a change
 
@@ -49,4 +49,4 @@ npm view @aryasaatvik/stack dist-tags --json
 gh release view "v$(bun -e 'console.log(require("./package.json").version)')"
 ```
 
-Do not publish from a dirty worktree or rerun a partially completed release without first checking npm, the Git tag, GitHub Release, and Tegami publish status. This migration does not publish a package, create a version pull request, or change npm state.
+Do not publish from a dirty worktree or rerun a partially completed release without first checking npm, the Git tag, GitHub Release, and Tegami publish status.

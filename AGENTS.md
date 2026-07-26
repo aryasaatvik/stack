@@ -64,7 +64,7 @@
 ## Releases
 
 - npm package: `@aryasaatvik/stack`.
-- Releases use Tegami from an attended local session; GitHub Actions validates pull requests only.
+- Releases use Tegami from an attended local session; GitHub Actions is not used for publication, and the retained manual-dispatch workflow is validation-only.
 - Add a user-facing note under `.tegami/` and commit it with the change it describes.
 - `bun run version:packages` opens or updates `tegami/version-packages` against `dev`; review and merge that PR before publishing.
 - From a clean, current `dev` branch, run `bun run release`. It runs release checks, publishes npm, pushes the matching `vX.Y.Z` tag, and creates the GitHub Release.
