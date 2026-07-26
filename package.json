@@ -37,16 +37,16 @@
   },
   "scripts": {
     "build": "bun run dev/build-cli.ts",
-    "changeset": "npm exec --package @changesets/cli@2.31.0 -- changeset",
-    "changeset:status": "npm exec --package @changesets/cli@2.31.0 -- changeset status",
-    "changeset:version": "npm exec --package @changesets/cli@2.31.0 -- changeset version",
     "dev": "bun src/cli.ts status",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
     "lint": "oxlint",
     "package:smoke": "bun run build && npm pack --dry-run",
     "prepack": "bun run build",
-    "release": "bun run package:smoke && npm exec --package @changesets/cli@2.31.0 -- changeset publish",
+    "tegami": "bun scripts/tegami.mts",
+    "version:packages": "bun run tegami version",
+    "release:check": "bun run format:check && bun run lint && bun run typecheck && bun run test && bun run package:smoke",
+    "release": "bun run release:check && bun run tegami publish",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -60,6 +60,7 @@
     "@types/bun": "latest",
     "oxfmt": "^0.51.0",
     "oxlint": "^1.66.0",
+    "tegami": "1.2.6",
     "typescript": "^6.0.3",
     "vitest": "^4.1.7"
   }

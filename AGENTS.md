@@ -60,3 +60,12 @@
 - Run `bun run test`.
 - Run `bun run format:check` and `bun run lint` when formatting or lint config is present.
 - When changing CLI docs or behavior, spot-check `bun src/cli.ts --help` and relevant subcommand help.
+
+## Releases
+
+- npm package: `@aryasaatvik/stack`.
+- Releases use Tegami from an attended local session; GitHub Actions is not used for publication, and the retained manual-dispatch workflow is validation-only.
+- Add a user-facing note under `.tegami/` and commit it with the change it describes.
+- `bun run version:packages` opens or updates `tegami/version-packages` against `dev`; review and merge that PR before publishing.
+- From a clean, current `dev` branch, run `bun run release`. It runs release checks, publishes npm, pushes the matching `vX.Y.Z` tag, and creates the GitHub Release.
+- See `docs/release.md` for the release and verification procedure. Do not publish from a dirty checkout or rerun a partial release before checking npm, the tag, GitHub Release, and Tegami publish state.
